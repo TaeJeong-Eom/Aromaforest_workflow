@@ -1,0 +1,312 @@
+{
+  "name": "재고 부족 알림",
+  "nodes": [
+    {
+      "parameters": {
+        "url": "https://api.imweb.me/v2/shop/products",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "access-token",
+              "value": "={{ $json.access_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1152,
+        176
+      ],
+      "id": "0c4e67f8-805a-4889-a8c0-fb31d59bdd8d",
+      "name": "상품조회"
+    },
+    {
+      "parameters": {
+        "jsCode": "const products = $input.first().json.data.list;\n\n// 카테고리 코드\nconst CAT_FRAGRANCE = 'f20160708577ef3395a551'; // 향료\nconst CAT_BOTTLE = 's202202255681c700d7972';     // 공병\nconst CAT_BASE = 's202202257ebd48ab82b67';       // 베이스,색소\nconst CAT_ETC = 'f20160708577ef35540de9';        // 기타 부자재\n\nconst alerts = [];\n\nproducts.forEach(product => {\n  const stock = product.stock;\n  const name = product.name;\n\n  if (product.prod_status !== 'sale') return;\n  if (!stock.stock_use || stock.stock_unlimit) return;\n\n  const qty = stock.stock_no_option;\n  let threshold = null;\n  let catName = null;\n\n  product.categories.forEach(catCode => {\n\n    if (catCode === CAT_FRAGRANCE) {\n      threshold = 5;\n      catName = '향료';\n\n    } else if (catCode === CAT_BOTTLE) {\n      if (name.includes('펌프')) {\n        threshold = 50; catName = '펌프';\n      } else if (name.includes('코롱')) {\n        threshold = 20; catName = '코롱 공병';\n      } else if (name.includes('뚜껑') || name.includes('캡')) {\n        threshold = 10; catName = '뚜껑';\n      } else {\n        threshold = 10; catName = '공병';\n      }\n\n    } else if (catCode === CAT_BASE) {\n      if (name.includes('클린리퀴드')) {\n        threshold = 10; catName = '클린리퀴드';\n      }\n\n    } else if (catCode === CAT_ETC) {\n      if (name.includes('파우치')) {\n        threshold = 5; catName = '파우치';\n      }\n    }\n\n    if (threshold !== null && qty <= threshold) {\n      alerts.push({\n        name: name,\n        category: catName,\n        stock: qty,\n        threshold: threshold\n      });\n    }\n  });\n});\n\nconst messageLines = alerts.map((item, index) => {\n  return `${index + 1}. [${item.category}] ${item.name}\\n   잔여 재고: ${item.stock}개 (기준: ${item.threshold}개 이하)`;\n});\n\nconst text = alerts.length > 0\n  ? `⚠️ 재고 확인 필요 상품\\n\\n${messageLines.join('\\n\\n')}`\n  : null;\n\nreturn [{ json: { \n  hasAlerts: alerts.length > 0,\n  alerts: alerts,\n  text: text,\n  template_object: alerts.length > 0 ? JSON.stringify({\n    object_type: \"text\",\n    text: text,\n    link: { web_url: \"https://aromaforest.shop\" }\n  }) : null\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1376,
+        176
+      ],
+      "id": "031498b1-15b6-48ec-b762-bdfb15fa9451",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "content": "## 아임웹 카테고리 코드\n\n| 카테고리 | 코드 | 임계값 |\n|---|---|---|\n| 향료 | f20160708577ef3395a551 | 5개 이하 |\n| 공병 (뚜껑 포함) | s202202255681c700d7972 | 3개 이하 |\n| 기타 부자재 | f20160708577ef35540de9 | - |\n| 디퓨저 | f20160708577ef3474cac2 | - |\n| 베이스,색소 | s202202257ebd48ab82b67 | - |\n| 전체제품 | s20220219f120f67cf37c8 | - |\n\n\n## 재고 알림 임계값\n향료: 5개 미만\n공병: 10set 미만\n펌프: 50set 미만\n코롱 공병: 20set 미만\n뚜껑/캡: 10set 미만\n클린리퀴드: 10개 미만\n파우치: 5set 미만",
+        "height": 384,
+        "width": 416
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "e11523a3-8b9b-40f3-9766-165fdd6c1dbd",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "0301597e-15aa-428a-896a-f207f124874f",
+              "leftValue": "={{ $json.hasAlerts }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1600,
+        176
+      ],
+      "id": "e13d09ac-fa4e-4122-8ec6-b772e64d449a",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://kapi.kakao.com/v2/api/talk/memo/default/send",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={\n  \"Authorization\": \"Bearer {{ $('Call \\'카카오 액세스 토큰 갱신 (서브)\\'').first().json.access_token }}\"\n}",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "template_object",
+              "value": "={{ $json.template_object }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1824,
+        176
+      ],
+      "id": "f59f491d-1ff3-429a-9dde-96680861968e",
+      "name": "카톡 발송"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1,
+                2
+              ],
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        480,
+        176
+      ],
+      "id": "1b7d953c-aa04-4a1f-9ffe-16fd022c35be",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "content": "## 재고 부족 알림\n\n매주 월/화 아침, 임계값 이하 상품 있으면 카톡으로 알림\n\n",
+        "height": 96,
+        "width": 416
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -112
+      ],
+      "id": "19b2b5eb-25ed-4f42-a3ad-e04515b7732a",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "zgsB4cWyOcQ0oqas",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/zgsB4cWyOcQ0oqas",
+          "cachedResultName": "카카오 액세스 토큰 갱신 (서브)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [
+            "test"
+          ],
+          "schema": [
+            {
+              "id": "test",
+              "displayName": "test",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        704,
+        176
+      ],
+      "id": "64ba3c0d-441b-4003-b7d8-ce1f9bd60beb",
+      "name": "Call '카카오 액세스 토큰 갱신 (서브)'"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "ec91tTqNK7ZTIQ5J",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/ec91tTqNK7ZTIQ5J",
+          "cachedResultName": "아임웹 인증 (서브)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [
+            "test"
+          ],
+          "schema": [
+            {
+              "id": "test",
+              "displayName": "test",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        928,
+        176
+      ],
+      "id": "2f62ec56-c744-499c-9984-276566fa1f7f",
+      "name": "Call '아임웹 인증 (서브)'"
+    }
+  ],
+  "connections": {
+    "상품조회": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "카톡 발송",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Call '카카오 액세스 토큰 갱신 (서브)'",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call '카카오 액세스 토큰 갱신 (서브)'": {
+      "main": [
+        [
+          {
+            "node": "Call '아임웹 인증 (서브)'",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call '아임웹 인증 (서브)'": {
+      "main": [
+        [
+          {
+            "node": "상품조회",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "pinData": {}
+}

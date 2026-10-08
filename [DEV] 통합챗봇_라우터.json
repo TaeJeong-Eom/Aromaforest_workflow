@@ -1,0 +1,432 @@
+{
+  "name": "[DEV] 통합챗봇_라우터",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        240
+      ],
+      "id": "aa9632b8-f454-46a7-87c0-301e241b7e29",
+      "name": "When chat message received"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "claude-haiku-4-5-20251001",
+          "mode": "list",
+          "cachedResultName": "Claude Haiku 4.5"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        296,
+        464
+      ],
+      "id": "70e9286f-5321-4bfd-9843-c194a3d0be16",
+      "name": "Anthropic Chat Model"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "owner",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "4c7d114e-5f0c-48e7-9afa-821b9b46c5da"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "0"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "b5050a1f-5f69-4cfc-b315-5c921134b514",
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "sales",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "1"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "81fd78d5-42ef-4814-a802-3df3f6612fba",
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "stock",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "2"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        800,
+        208
+      ],
+      "id": "7870afc4-31c5-4056-9344-ecd54e9be146",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1024,
+        528
+      ],
+      "id": "20d16ccc-3e7e-40bd-a61b-60bfffb4a109",
+      "name": "더미_되묻기"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.chatInput }}",
+        "options": {
+          "systemMessage": "당신은 아로마포레스트(향수 프랜차이즈 본사)의 분석 챗봇 라우터입니다.\n사용자 질문을 분석해서 적절한 분석 카테고리로 분류하고, 보조 정보를 추출하세요.\n\n# 카테고리 정의\n\n**owner (점주 분석)**\n- 특정 점주의 매출, 구매 패턴, 비교 분석\n- 점주명이 명시된 질문\n- 예: \"가맹점 O 이번달 분석\", \"C점과 G점 비교\"\n\n**sales (매출 분석)**\n- 상품, 카테고리, 기간 중심의 판매·매출 분석\n- 점주명 없이 상품/기간 중심 질문\n- 예: \"이번달 매출 TOP10\", \"S-시리즈 판매량\", \"12월 트렌드\"\n\n**stock (재고 파악)**\n- 본사 재고 상태, 부족 품목, 발주 필요량\n- \"재고\", \"부족\", \"발주\" 키워드 포함\n- 예: \"재고 부족한 거\", \"공병 재고\", \"발주 필요 품목\"\n\n**unknown**\n- 위 카테고리에 명확히 속하지 않거나 모호한 질문\n- 예: \"우리 회사 어때?\"\n\n# 우선순위 규칙\n\n1. 점주명이 명시되면 → owner (매출 키워드 있어도)\n2. 점주명 없고 상품명/카테고리/기간만 있으면 → sales\n3. 재고/부족/발주 키워드가 있으면 → stock\n4. 위 규칙으로 결정 안 되면 → unknown\n\n# 활성 점주 목록 (참조용)\n\nC점, 개인점주1, K점, 가맹점 M, 개인점주2, 본사|공용, 본사|담당자1, 본사|담당자2, D점, G점, H점, I점, A점, 가맹점 O, 가맹점 P, 가맹점 Q, 직영점 1, 직영점 2, 가맹점 R, 가맹점 S\n\n# 출력 형식 (반드시 JSON만 출력)\n\n{\n  \"category\": \"owner\" | \"sales\" | \"stock\" | \"unknown\",\n  \"confidence\": 0.0 ~ 1.0,\n  \"extracted_info\": {\n    \"owners\": [\"점주명1\", \"점주명2\"] 또는 [],\n    \"period\": \"이번달\" | \"3개월\" | \"지난 분기\" | null,\n    \"products\": [\"상품명\"] 또는 [],\n    \"categories\": [\"향료\" | \"공병\" | ...] 또는 [],\n    \"extra_focus\": \"추가 컨텍스트 또는 null\"\n  },\n  \"document_type\": \"RPT\" | \"INS\" | null,\n  \"reasoning\": \"분류 이유 한 줄\"\n}\n\n# 중요 규칙\n\n- JSON만 출력 (다른 텍스트, 마크다운, ```json``` 없이)\n- confidence 0.7 미만이면 category를 unknown으로 설정\n- 점주명은 활성 점주 목록과 매칭 (정확한 이름으로 추출)\n- 매칭 안 되는 점주명은 owners에 포함하지 말고 reasoning에 명시\n- document_type은 명시되지 않으면 null\n\n# 예시\n\n입력: \"가맹점 O 이번달 매출 분석해줘\"\n출력:\n{\n  \"category\": \"owner\",\n  \"confidence\": 0.95,\n  \"extracted_info\": {\n    \"owners\": [\"가맹점 O\"],\n    \"period\": \"이번달\",\n    \"products\": [],\n    \"categories\": [],\n    \"extra_focus\": null\n  },\n  \"document_type\": \"RPT\",\n  \"reasoning\": \"점주명 명시되어 owner로 분류\"\n}\n\n입력: \"A점과 가맹점 M의 3개월 매출 비교\"\n출력:\n{\n  \"category\": \"owner\",\n  \"confidence\": 0.9,\n  \"extracted_info\": {\n    \"owners\": [\"A점\", \"가맹점 M\"],\n    \"period\": \"3개월\",\n    \"products\": [],\n    \"categories\": [],\n    \"extra_focus\": \"두 점주 매출 비교\"\n  },\n  \"document_type\": \"RPT\",\n  \"reasoning\": \"점주명 두 개 명시, 비교 분석 요청\"\n}\n\n입력: \"이번달 매출 TOP 10 상품\"\n출력:\n{\n  \"category\": \"sales\",\n  \"confidence\": 0.95,\n  \"extracted_info\": {\n    \"owners\": [],\n    \"period\": \"이번달\",\n    \"products\": [],\n    \"categories\": [],\n    \"extra_focus\": \"상품 매출 순위\"\n  },\n  \"document_type\": \"RPT\",\n  \"reasoning\": \"상품/기간 중심, 점주명 없음\"\n}\n\n입력: \"공병 재고 어때\"\n출력:\n{\n  \"category\": \"stock\",\n  \"confidence\": 0.95,\n  \"extracted_info\": {\n    \"owners\": [],\n    \"period\": null,\n    \"products\": [],\n    \"categories\": [\"공병\"],\n    \"extra_focus\": \"재고 현황\"\n  },\n  \"document_type\": \"INS\",\n  \"reasoning\": \"재고 키워드 + 카테고리 명시\"\n}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        224,
+        240
+      ],
+      "id": "752136bb-1202-4e8c-903c-cb72fcb2afb6",
+      "name": "Clean Output"
+    },
+    {
+      "parameters": {
+        "jsCode": "// AI 출력 정제: JSON 파싱 + 검증 + 임계값 적용\n\nconst aiOutput = $input.first().json.output || $input.first().json.text || $input.first().json;\n\nlet parsed;\n\n// JSON 파싱 (문자열일 경우)\ntry {\n  if (typeof aiOutput === 'string') {\n    // 마크다운 코드블록 제거\n    const cleaned = aiOutput.replace(/```json\\s*/g, '').replace(/```\\s*/g, '').trim();\n    parsed = JSON.parse(cleaned);\n  } else {\n    parsed = aiOutput;\n  }\n} catch (e) {\n  return [{\n    json: {\n      category: 'unknown',\n      confidence: 0,\n      extracted_info: { owners: [], period: null, products: [], categories: [], extra_focus: null },\n      document_type: null,\n      reasoning: 'JSON 파싱 실패: ' + e.message,\n      raw_output: aiOutput\n    }\n  }];\n}\n\n// Confidence 임계값 적용 (0.7 미만 → unknown)\nconst CONFIDENCE_THRESHOLD = 0.7;\n\nif (parsed.confidence < CONFIDENCE_THRESHOLD && parsed.category !== 'unknown') {\n  parsed.category = 'unknown';\n  parsed.reasoning = `Confidence 낮음 (${parsed.confidence}) - unknown 처리: ` + (parsed.reasoning || '');\n}\n\n// 카테고리 검증\nconst validCategories = ['owner', 'sales', 'stock', 'unknown'];\nif (!validCategories.includes(parsed.category)) {\n  parsed.category = 'unknown';\n  parsed.reasoning = '유효하지 않은 카테고리: ' + (parsed.reasoning || '');\n}\n\n// 사용자 원본 질문 보존 (다음 노드에서 활용)\nparsed.original_query = $('When chat message received').first().json.chatInput || '';\n\nreturn [{ json: parsed }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        576,
+        240
+      ],
+      "id": "e96b8352-496c-4a81-af84-e0e4a94f1d51",
+      "name": "분류 결과 정제"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "kziRvoRaMeAi97Hv",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/kziRvoRaMeAi97Hv",
+          "cachedResultName": "[DEV] AI Response"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1024,
+        -48
+      ],
+      "id": "1e0d1b49-2b6e-4a81-90fc-a5a71316b3a3",
+      "name": "Call '[DEV] AI Response'"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "Fo96urDt2cjfcJ7r",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/Fo96urDt2cjfcJ7r",
+          "cachedResultName": "[DEV] AI Response - Sales"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "category": "={{ $json.category }}",
+            "extracted_info": "={{ $json.extracted_info }}",
+            "document_type": "={{ $json.document_type }}",
+            "original_query": "={{ $json.original_query }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "extracted_info",
+              "displayName": "extracted_info",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            },
+            {
+              "id": "document_type",
+              "displayName": "document_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "original_query",
+              "displayName": "original_query",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1024,
+        144
+      ],
+      "id": "60d07769-9f51-43a0-b3ac-9df2deda9f51",
+      "name": "Call '[DEV] AI Response - Sales'"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "8TNkjBDs67jyu96w",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/8TNkjBDs67jyu96w",
+          "cachedResultName": "[DEV] AI Response - Stock"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "category": "={{ $json.category }}",
+            "extracted_info": "={{ $json.extracted_info }}",
+            "document_type": "={{ $json.document_type }}",
+            "original_query": "={{ $json.original_query }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "extracted_info",
+              "displayName": "extracted_info",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            },
+            {
+              "id": "document_type",
+              "displayName": "document_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "original_query",
+              "displayName": "original_query",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1024,
+        336
+      ],
+      "id": "65fdfd6c-0578-4032-bc20-a0cb4ad043fb",
+      "name": "Call '[DEV] AI Response - Stock'"
+    }
+  ],
+  "connections": {
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "Clean Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Clean Output",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Call '[DEV] AI Response'",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call '[DEV] AI Response - Sales'",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call '[DEV] AI Response - Stock'",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "더미_되묻기",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean Output": {
+      "main": [
+        [
+          {
+            "node": "분류 결과 정제",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "분류 결과 정제": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "pinData": {}
+}

@@ -1,0 +1,725 @@
+{
+  "name": "아로마포레스트 AI 챗봇(점주분석 리포트)",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        1632,
+        96
+      ],
+      "id": "3dfe9ac1-65a6-48af-89fa-ed32cb6048f6",
+      "name": "When chat message received"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "claude-sonnet-4-6",
+          "mode": "list",
+          "cachedResultName": "Claude Sonnet 4.6"
+        },
+        "options": {
+          "thinking": true
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        3424,
+        320
+      ],
+      "id": "3623144f-b0fb-4c8d-a657-590bb767c5c0",
+      "name": "Anthropic Chat Model"
+    },
+    {
+      "parameters": {
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/YOUR_AROMAFOREST_SHEET_ID/values/%EC%A3%BC%EB%AC%B8_RAW!A:M",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "key",
+              "value": "{{KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2880,
+        96
+      ],
+      "id": "c083a8ac-4462-4f3a-8bd7-29d5f58aac51",
+      "name": "Sheets API 조회"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// 데이터 필터링 (쿼리 JSON 기반 범용 집계 엔진)\n// ============================================\n\nconst meta = $('쿼리 정제').first().json;\nconst rows = $input.first().json.values ?? [];\nconst [header, ...dataRows] = rows;\n\n// 열 인덱스 동적 매핑 (헤더 기준 — 시트 구조 변경에 견고)\nconst headerMap = Object.fromEntries(header.map((h, i) => [h, i]));\nconst idx = {\n  주문일시: headerMap['주문일시'],\n  점주명: headerMap['점주명'],\n  상품명: headerMap['상품명'],\n  옵션값: headerMap['옵션값'],\n  수량: headerMap['수량'],\n  단가: headerMap['단가']\n};\n\n// 헤더 누락 검증 (운영 안전장치)\nconst missingCols = Object.entries(idx)\n  .filter(([_, v]) => v === undefined)\n  .map(([k]) => k);\nif (missingCols.length > 0) {\n  throw new Error(`주문_RAW 시트에서 다음 컬럼을 찾을 수 없습니다: ${missingCols.join(', ')}`);\n}\n\n// 상품 표시 헬퍼 (상품명 + 옵션값)\nconst 상품표시 = (row) => {\n  const 명 = row[idx.상품명] || '';\n  const 옵 = row[idx.옵션값] || '';\n  if (명 && 옵) return `${명} (${옵})`;\n  return 명 || 옵 || '미상';\n};\n\n// ---------- 1. 필터링 ----------\nconst filterRow = (row, 필터) => {\n  // 점주 필터\n  if (필터.점주 && 필터.점주.length > 0) {\n    if (!필터.점주.includes(row[idx.점주명])) return false;\n  }\n  \n  // 기간 필터\n  const 년월 = (row[idx.주문일시] || '').slice(0, 7);\n  if (필터.기간시작 && 년월 < 필터.기간시작) return false;\n  if (필터.기간종료 && 년월 > 필터.기간종료) return false;\n  \n  // 상품 키워드 필터\n  if (필터.상품키워드 && 필터.상품키워드.length > 0) {\n    const 상품전체 = `${row[idx.상품명] || ''} ${row[idx.옵션값] || ''}`;\n    const 매칭 = 필터.상품키워드.some(k => 상품전체.includes(k));\n    if (!매칭) return false;\n  }\n  \n  return true;\n};\n\n// ---------- 2. 집계 함수 ----------\nconst 집계수행 = (rows, 스펙) => {\n  const 그룹 = {};\n  \n  for (const row of rows) {\n    // 그룹 키 생성\n    const 키 = 스펙.그룹.map(g => {\n      if (g === '점주명') return row[idx.점주명] || '미상';\n      if (g === '상품명') return 상품표시(row);\n      if (g === '년월') return (row[idx.주문일시] || '').slice(0, 7);\n      return '';\n    }).join(' | ');\n    \n    if (!키) continue;\n    \n    const 수량 = parseInt(row[idx.수량]) || 0;\n    const 단가 = parseInt(row[idx.단가]) || 0;\n    const 매출 = 수량 * 단가;\n    \n    if (!그룹[키]) 그룹[키] = { 매출: 0, 수량: 0, 주문수: 0 };\n    그룹[키].매출 += 매출;\n    그룹[키].수량 += 수량;\n    그룹[키].주문수 += 1;\n  }\n  \n  // 정렬\n  let 엔트리 = Object.entries(그룹);\n  if (스펙.정렬 === '매출내림차순') 엔트리.sort((a, b) => b[1].매출 - a[1].매출);\n  else if (스펙.정렬 === '수량내림차순') 엔트리.sort((a, b) => b[1].수량 - a[1].수량);\n  else if (스펙.정렬 === '년월오름차순') 엔트리.sort((a, b) => a[0].localeCompare(b[0]));\n  \n  // 상위 N\n  if (스펙.상위N && 스펙.상위N > 0) {\n    엔트리 = 엔트리.slice(0, 스펙.상위N);\n  }\n  \n  return Object.fromEntries(엔트리);\n};\n\n// ---------- 3. 메인 실행 ----------\nconst 필터링된 = dataRows.filter(row => filterRow(row, meta.필터 ?? {}));\n\nconst 결과 = {\n  기간: `${meta.필터?.기간시작 ?? '전체'} ~ ${meta.필터?.기간종료 ?? '전체'}`,\n  점주필터: meta.필터?.점주 ?? '전체',\n  필터링행수: 필터링된.length\n};\n\n// 각 집계 수행\nfor (const 스펙 of meta.집계 ?? []) {\n  결과[스펙.이름] = 집계수행(필터링된, 스펙);\n}\n\n// 전체 총계 (항상 포함)\n결과.전체총계 = {\n  매출: 필터링된.reduce((s, r) => s + (parseInt(r[idx.수량]) || 0) * (parseInt(r[idx.단가]) || 0), 0),\n  수량: 필터링된.reduce((s, r) => s + (parseInt(r[idx.수량]) || 0), 0),\n  주문수: 필터링된.length\n};\n\n// ---------- 4. 비교 집계 (전월대비) ----------\nif (meta.비교?.전월대비 && meta.필터?.기간시작) {\n  const 전월 = (() => {\n    const [y, m] = meta.필터.기간시작.split('-').map(Number);\n    const d = new Date(y, m - 2, 1);\n    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;\n  })();\n  \n  const 전월행 = dataRows.filter(row => {\n    if (meta.필터.점주 && meta.필터.점주.length > 0) {\n      if (!meta.필터.점주.includes(row[idx.점주명])) return false;\n    }\n    const 년월 = (row[idx.주문일시] || '').slice(0, 7);\n    return 년월 === 전월;\n  });\n  \n  결과.비교_전월 = {\n    기간: 전월,\n    매출: 전월행.reduce((s, r) => s + (parseInt(r[idx.수량]) || 0) * (parseInt(r[idx.단가]) || 0), 0),\n    수량: 전월행.reduce((s, r) => s + (parseInt(r[idx.수량]) || 0), 0),\n    주문수: 전월행.length\n  };\n}\n\n// ---------- 5. 비교 집계 (전년동월대비) ----------\nif (meta.비교?.전년동월대비 && meta.필터?.기간시작) {\n  const 전년동월 = (() => {\n    const [y, m] = meta.필터.기간시작.split('-').map(Number);\n    return `${y - 1}-${String(m).padStart(2, '0')}`;\n  })();\n  \n  const 전년행 = dataRows.filter(row => {\n    if (meta.필터.점주 && meta.필터.점주.length > 0) {\n      if (!meta.필터.점주.includes(row[idx.점주명])) return false;\n    }\n    const 년월 = (row[idx.주문일시] || '').slice(0, 7);\n    return 년월 === 전년동월;\n  });\n  \n  결과.비교_전년동월 = {\n    기간: 전년동월,\n    매출: 전년행.reduce((s, r) => s + (parseInt(r[idx.수량]) || 0) * (parseInt(r[idx.단가]) || 0), 0),\n    수량: 전년행.reduce((s, r) => s + (parseInt(r[idx.수량]) || 0), 0),\n    주문수: 전년행.length\n  };\n}\n\n// ---------- 6. 최종 반환 ----------\nreturn [{\n  json: {\n    ...meta,\n    data: JSON.stringify(결과),\n    dataSize: JSON.stringify(결과).length\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3104,
+        96
+      ],
+      "id": "b46ce544-1508-4789-bc5f-0e4bd2e962c0",
+      "name": "데이터 필터링"
+    },
+    {
+      "parameters": {
+        "folderId": "default",
+        "title": "={{ $json.문서번호 }}"
+      },
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        3904,
+        96
+      ],
+      "id": "aa391a5b-282f-48ff-a78b-fc71d02df38f",
+      "name": "Google Docs 생성"
+    },
+    {
+      "parameters": {
+        "jsCode": "const docId = $('Google Docs 생성').first().json.id;\nconst docUrl = `https://docs.google.com/document/d/${docId}`;\n\nreturn [{\n  json: {\n    output: `분석 완료! 문서 링크: ${docUrl}`\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6144,
+        96
+      ],
+      "id": "3a5fc07d-0946-4d47-abcf-f6906ecdd251",
+      "name": "문서 URL 반환"
+    },
+    {
+      "parameters": {
+        "jsCode": "const meta = $('데이터 필터링').first().json;\nconst raw = $('리포트 생성 AI').first().json.output;\nlet parsed;\ntry {\n  const cleaned = raw.replace(/```json/g, '').replace(/```/g, '').trim();\n  parsed = JSON.parse(cleaned);\n} catch(e) {\n  parsed = { 문서코드: 'RPT', 오류: 'JSON 파싱 실패' };\n}\nconst 문서코드 = parsed.문서코드 ?? meta.문서코드;\nconst 카테고리 = parsed.카테고리 ?? meta.카테고리;\nconst 구분선 = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\n';\nconst requests = [];\nlet currentIndex = 1;\n\nconst append = (text) => {\n  requests.push({\n    insertText: {\n      text,\n      endOfSegmentLocation: { segmentId: '' }\n    }\n  });\n  currentIndex += text.length;\n};\n\nconst appendHeading2 = (text) => {\n  const startIdx = currentIndex;\n  append(text);\n  requests.push({\n    updateParagraphStyle: {\n      range: { startIndex: startIdx, endIndex: startIdx + text.length - 1 },\n      paragraphStyle: { namedStyleType: 'HEADING_4' },\n      fields: 'namedStyleType'\n    }\n  });\n};\n\n// 헤더\nappend('AROMAFOREST\\n');\nappend('\\n');\nappend(`문서번호: ${meta.문서번호}\\n`);\nappend(`생성일시: ${meta.생성일시}\\n`);\nappend(`문서유형: ${문서코드 === 'RPT' ? '데이터분석' : '인사이트'} | 카테고리: ${카테고리}\\n`);\nappend('\\n');\nappend(구분선);\n\n// AROMAFOREST 폰트 스타일\nrequests.push({\n  updateTextStyle: {\n    range: { startIndex: 1, endIndex: 13 },\n    textStyle: { fontSize: { magnitude: 20, unit: 'PT' } },\n    fields: 'fontSize'\n  }\n});\n\nif (문서코드 === 'RPT') {\n  // 01. 요약\n  appendHeading2('01. 요약\\n');\n  for (const item of parsed.요약 ?? []) {\n    append(`  ${item.키}: ${item.값}\\n`);\n  }\n  \n  // 02. 상세 데이터\n  appendHeading2('02. 상세 데이터\\n');\n  \n  // 🆕 동적으로 '상세데이터*' 키 모두 수집\n  const tables = Object.keys(parsed)\n    .filter(k => k.startsWith('상세데이터'))\n    .sort()\n    .map(k => parsed[k])\n    .filter(Boolean);\n  \n  for (const table of tables) {\n    append(`\\n${table.제목}\\n`);\n    requests.push({\n      insertTable: {\n        rows: table.행들.length + 1,\n        columns: table.컬럼.length,\n        endOfSegmentLocation: { segmentId: '' }\n      }\n    });\n    append('\\n');\n  }\n  \n  // 03. 인사이트 (표 이후라 index 추적 없이 삽입만)\n  if (parsed.인사이트?.length > 0) {\n    requests.push({ insertText: { text: '03. 인사이트\\n', endOfSegmentLocation: { segmentId: '' } } });\n    for (const item of parsed.인사이트) {\n      requests.push({ insertText: { text: `  • ${item}\\n`, endOfSegmentLocation: { segmentId: '' } } });\n    }\n  }\n  \n  requests.push({ insertText: { text: `${parsed.합계 ?? ''}\\n`, endOfSegmentLocation: { segmentId: '' } } });\n  requests.push({ insertText: { text: 구분선, endOfSegmentLocation: { segmentId: '' } } });\n} else {\n  appendHeading2('01. 핵심 요약\\n');\n  append(`  ${parsed.핵심요약 ?? ''}\\n`);\n  appendHeading2('02. 분석 근거\\n');\n  for (const item of parsed.분석근거 ?? []) {\n    append(`  • ${item}\\n`);\n  }\n  appendHeading2('03. 참고 사항\\n');\n  for (const item of parsed.참고사항 ?? []) {\n    append(`  • ${item}\\n`);\n  }\n}\n\nrequests.push({ insertText: { text: '생성: 아로마포레스트 AI 분석 시스템\\n', endOfSegmentLocation: { segmentId: '' } } });\n\nconst fullBody = JSON.stringify({ requests });\nreturn [{\n  json: {\n    fullBody,\n    parsedData: JSON.stringify(parsed),\n    문서번호: meta.문서번호,\n    문서코드,\n    카테고리\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3680,
+        96
+      ],
+      "id": "523e795b-8b17-49db-9ec5-53c9f12f305c",
+      "name": "JSON 파싱"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $('Google Docs 생성').first().json.id }}:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $('JSON 파싱').first().json.fullBody }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4128,
+        96
+      ],
+      "id": "e8000eb3-c2b6-4465-8023-c3f9310a8681",
+      "name": "Docs 텍스트+표 삽입"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $('Google Docs 생성').first().json.id }}:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.fullBody }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        5920,
+        176
+      ],
+      "id": "55d41b6c-2716-48b5-9f34-922b8ee63e82",
+      "name": "Docs 셀 내용 삽입"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "5caeefe8-9752-4d07-bfa4-4047fe5cab8b",
+              "leftValue": "={{ $json.isEmpty }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        5696,
+        96
+      ],
+      "id": "dcdfbaec-23ee-4b53-8bd0-5a52d793d95b",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "claude-haiku-4-5-20251001",
+          "mode": "list",
+          "cachedResultName": "Claude Haiku 4.5"
+        },
+        "options": {
+          "maxTokensToSample": 1000,
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        2384,
+        320
+      ],
+      "id": "9c46200f-27e1-4c2e-8f81-ab0f1d9784f6",
+      "name": "Anthropic Chat Model1"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=오늘 날짜: {{ $now.format('yyyy-MM-dd') }}\n\n질문: {{ $('When chat message received').item.json.chatInput }}",
+        "options": {
+          "systemMessage": "⚠️ 중요: 출력은 { 로 시작해서 } 로 끝나야 합니다. \n그 앞뒤에 어떤 문자도 올 수 없습니다.\n코드 블록(```), \"json\" 라벨, 공백, 줄바꿈 모두 금지.\n\n당신은 아로마포레스트 주문 데이터 분석 시스템의 질문 파서입니다.\n사용자의 자연어 질문을 구조화된 쿼리 JSON으로 변환합니다.\n\n이 워크플로우는 **점주 단위 분석 리포트**를 생성하는 전용입니다.\n사용자 질문에서 점주명을 반드시 매칭하고, 해당 점주의 구매 패턴, \n상품 선호, 시간 변화를 분석하는 쿼리를 설계하세요.\n\n## 분석 가능한 데이터\n\n시트명: 주문_RAW\n열 구조: 적재일시, 주문번호, 주문일시, 점주명, 상품명, 옵션명, 옵션값, 수량, 단가, 배송비, 완료여부, 주문상태\n기간 범위: 2024-11 ~ 현재\n행 수: 약 6,000행\n\n## 점주 목록 (정확한 이름으로만 매칭)\n\n{{ $('점주 리스트 생성').item.json.점주_리스트_텍스트 }}\n\n## 점주 매칭 규칙\n\n- 사용자가 언급한 이름을 위 리스트와 매칭\n- 부분 매칭 허용 (예: \"모락\" → \"가맹점 M\", \"강남 직영\" → \"직영점 1\")\n- 여러 매칭 가능 시 가장 유사한 1개 선택\n- 공백/구분자 차이는 무시 (예: \"가맹점 Q\" = \"가맹점 Q\")\n- 리스트에 없는 이름이면 점주: null로 반환\n- 점주 미지정 시 전체 점주 대상 (점주: null)\n\n## 출력 스펙\n\n반드시 아래 JSON 형식으로만 답하세요.\n\n{\n  \"문서코드\": \"RPT\" 또는 \"INS\",\n  \"카테고리\": \"점주\" | \"매출\" | \"상품\" | \"재고\",\n  \"필터\": {\n    \"점주\": 배열 또는 null,\n    \"기간시작\": \"YYYY-MM\" 또는 null,\n    \"기간종료\": \"YYYY-MM\" 또는 null,\n    \"상품키워드\": 배열 또는 null\n  },\n  \"집계\": [\n    {\n      \"이름\": \"설명적 이름 (예: 가맹점 M 월별매출)\",\n      \"그룹\": [\"점주명\" | \"상품명\" | \"년월\"] 배열,\n      \"측정\": \"매출합계\" | \"수량합계\" | \"주문수\",\n      \"정렬\": \"매출내림차순\" | \"수량내림차순\" | \"년월오름차순\" | null,\n      \"상위N\": 숫자 또는 null\n    }\n  ],\n  \"비교\": {\n    \"전월대비\": boolean,\n    \"전년동월대비\": boolean\n  }\n}\n\n## 출력 규칙 (엄격)\n\n- 응답은 순수 JSON 객체만 포함하세요\n- 코드 블록(```), \"json\" 같은 라벨, 설명 텍스트를 앞뒤로 붙이지 마세요\n- 첫 문자는 { 여야 하고 마지막 문자는 } 여야 합니다\n\n## 판단 규칙\n\n### 문서코드\n- INS: \"왜\", \"어떻게\", \"추천\", \"제안\", \"판단\", \"원인\" 키워드 포함\n- RPT: 그 외 (기본값)\n\n### 카테고리\n- 이 워크플로우의 기본값은 \"점주\"\n- 재고: \"재고\", \"부족\", \"품절\" 언급\n- 상품: \"상품\", \"향료\", \"공병\", \"리필병\", \"향수\" 등이 주 관심사\n- 매출: 점주 언급 없이 매출만 관심\n\n### 기간 해석 (반드시 User Message의 \"오늘 날짜\"를 기준으로 계산)\n- \"이번달\": 기간시작/종료 모두 이번달\n- \"저번달\"/\"지난달\": 모두 저번달\n- \"올해\": 기간시작 올해 1월, 기간종료 이번달\n- \"작년\": 기간시작/종료 작년 1월~12월\n- \"최근 N개월\": 기간시작 (오늘 기준 N-1개월 전의 월), 기간종료 이번달\n- \"N개월 전\": 해당 월 하나\n- \"YYYY년 MM월\": 해당 월\n- \"YYYY년\": 해당 연도 전체\n- 명시 없음: 최근 3개월 (점주 분석의 합리적 기본값)\n\n### 집계 설계 원칙 (점주 분석 전용)\n\n점주가 매칭된 경우 **기본 집계 3개**를 포함:\n1. **월별 매출 추이** (그룹: [\"년월\"], 측정: 매출합계, 정렬: 년월오름차순)\n2. **상품별 매출 TOP10** (그룹: [\"상품명\"], 측정: 매출합계, 정렬: 매출내림차순, 상위N: 10)\n3. **상품별 수량 TOP10** (그룹: [\"상품명\"], 측정: 수량합계, 정렬: 수량내림차순, 상위N: 10)\n\n추가 집계는 사용자 질문에 따라:\n- \"카테고리\" 언급 → 카테고리별 집계 (향료/공병/베이스 등 키워드 구분)\n- \"월별 상품\" → 년월×상품명 그룹\n- \"추이\" → 기본 월별 매출 추이 유지\n\n### 비교 블록\n- \"전월 대비\", \"지난달 대비\" → 전월대비: true\n- \"작년 동월 대비\", \"전년 동월\" → 전년동월대비: true\n- 점주 분석에서는 기본값 false\n\n## 예시\n\n질문: \"가맹점 M 최근 3개월 분석해줘\" (오늘 2026-04-24 기준)\n출력:\n{\"문서코드\":\"RPT\",\"카테고리\":\"점주\",\"필터\":{\"점주\":[\"가맹점 M\"],\"기간시작\":\"2026-02\",\"기간종료\":\"2026-04\",\"상품키워드\":null},\"집계\":[{\"이름\":\"가맹점 M 월별 매출\",\"그룹\":[\"년월\"],\"측정\":\"매출합계\",\"정렬\":\"년월오름차순\",\"상위N\":null},{\"이름\":\"가맹점 M 상품별 매출 TOP10\",\"그룹\":[\"상품명\"],\"측정\":\"매출합계\",\"정렬\":\"매출내림차순\",\"상위N\":10},{\"이름\":\"가맹점 M 상품별 수량 TOP10\",\"그룹\":[\"상품명\"],\"측정\":\"수량합계\",\"정렬\":\"수량내림차순\",\"상위N\":10}],\"비교\":{\"전월대비\":false,\"전년동월대비\":false}}\n\n질문: \"강남 직영 분석\" (오늘 2026-04-24 기준, 기간 미지정)\n출력:\n{\"문서코드\":\"RPT\",\"카테고리\":\"점주\",\"필터\":{\"점주\":[\"직영점 1\"],\"기간시작\":\"2026-02\",\"기간종료\":\"2026-04\",\"상품키워드\":null},\"집계\":[{\"이름\":\"직영점 1 월별 매출\",\"그룹\":[\"년월\"],\"측정\":\"매출합계\",\"정렬\":\"년월오름차순\",\"상위N\":null},{\"이름\":\"직영점 1 상품별 매출 TOP10\",\"그룹\":[\"상품명\"],\"측정\":\"매출합계\",\"정렬\":\"매출내림차순\",\"상위N\":10},{\"이름\":\"직영점 1 상품별 수량 TOP10\",\"그룹\":[\"상품명\"],\"측정\":\"수량합계\",\"정렬\":\"수량내림차순\",\"상위N\":10}],\"비교\":{\"전월대비\":false,\"전년동월대비\":false}}\n\n질문: \"가맹점 S 작년 대비 올해 어때?\" (오늘 2026-04-24 기준)\n출력:\n{\"문서코드\":\"INS\",\"카테고리\":\"점주\",\"필터\":{\"점주\":[\"가맹점 S\"],\"기간시작\":\"2026-01\",\"기간종료\":\"2026-04\",\"상품키워드\":null},\"집계\":[{\"이름\":\"가맹점 S 월별 매출\",\"그룹\":[\"년월\"],\"측정\":\"매출합계\",\"정렬\":\"년월오름차순\",\"상위N\":null},{\"이름\":\"가맹점 S 상품별 매출 TOP10\",\"그룹\":[\"상품명\"],\"측정\":\"매출합계\",\"정렬\":\"매출내림차순\",\"상위N\":10},{\"이름\":\"가맹점 S 상품별 수량 TOP10\",\"그룹\":[\"상품명\"],\"측정\":\"수량합계\",\"정렬\":\"수량내림차순\",\"상위N\":10}],\"비교\":{\"전월대비\":false,\"전년동월대비\":true}}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        2304,
+        96
+      ],
+      "id": "bbb08fb9-06ef-4e06-b8f0-7d22b63709f6",
+      "name": "파싱 AI"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 파싱 AI 출력 정제\nconst raw = $input.first().json.output;\nlet query;\ntry {\n  const cleaned = raw.replace(/```json/g, '').replace(/```/g, '').trim();\n  query = JSON.parse(cleaned);\n} catch(e) {\n  query = {\n    문서코드: 'RPT',\n    카테고리: '매출',\n    필터: { 점주: null, 기간시작: null, 기간종료: null, 상품키워드: null },\n    집계: [],\n    비교: { 전월대비: false, 전년동월대비: false },\n    오류: 'AI 출력 파싱 실패: ' + e.message\n  };\n}\n\n// 문서 메타 생성\nconst now = new Date();\nconst 생성일시 = now.toISOString().slice(0, 16).replace('T', ' ');\nconst dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');\nconst timeStr = now.toTimeString().slice(0, 8).replace(/:/g, '');  // HHmmss\nconst 문서번호 = `${query.문서코드}-${dateStr}-${timeStr}`;\n\n// 원본 질문 가져오기 (Chat Trigger 노드 이름 확인 필요)\nconst question = $('When chat message received').first().json.chatInput ?? '';\n\nreturn [{\n  json: {\n    question,\n    문서번호,\n    생성일시,\n    ...query\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2656,
+        96
+      ],
+      "id": "75fe5f7e-c7be-41dc-81e4-2a10e487b8d2",
+      "name": "쿼리 정제"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=질문: {{ $json.question }}\n\n쿼리 정보:\n- 문서코드: {{ $json.문서코드 }}\n- 카테고리: {{ $json.카테고리 }}\n- 기간: {{ $json.필터.기간시작 }} ~ {{ $json.필터.기간종료 }}\n- 점주 필터: {{ $json.필터.점주 }}\n\n집계된 데이터:\n{{ $json.data }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "당신은 아로마포레스트 물류 데이터 분석 어시스턴트입니다.\n사용자의 질문과 함께 \"이미 필터링 및 집계된 데이터\"가 JSON으로 제공됩니다.\n당신의 역할은 이 집계 데이터를 해석하여 정해진 JSON 형식의 리포트를 생성하는 것입니다.\n\n특히 **점주 분석** 리포트의 경우, 단순 데이터 나열이 아닌 \n**인사이트 중심**의 분석 관점을 제공하세요:\n- 해당 점주의 구매 패턴 특이점\n- 시간에 따른 변화 (증가/감소/계절성)\n- 다른 점주와 차별화되는 특징\n\n반드시 아래 JSON 형식으로만 답변하세요. 다른 텍스트는 절대 포함하지 마세요.\n코드 블록(```), \"json\" 라벨 등도 붙이지 마세요. 첫 문자는 { 여야 합니다.\n\n## 입력 데이터 구조\n\n입력 데이터의 \"집계된 데이터\" 부분은 다음 구조입니다:\n{\n  \"기간\": \"YYYY-MM ~ YYYY-MM\",\n  \"점주필터\": [\"점주이름\"] 또는 \"전체\",\n  \"필터링행수\": 숫자,\n  \"<집계이름1>\": {\n    \"<그룹키>\": { \"매출\": 숫자, \"수량\": 숫자, \"주문수\": 숫자 }\n  },\n  \"<집계이름2>\": { ... },\n  \"전체총계\": { \"매출\": 숫자, \"수량\": 숫자, \"주문수\": 숫자 },\n  \"비교_전월\": { \"기간\": \"YYYY-MM\", \"매출\": 숫자, ... },    (선택적)\n  \"비교_전년동월\": { \"기간\": \"YYYY-MM\", \"매출\": 숫자, ... } (선택적)\n}\n\n## 문서코드가 \"RPT\"인 경우 출력 형식\n\n{\n  \"문서코드\": \"RPT\",\n  \"카테고리\": \"매출\" | \"상품\" | \"점주\" | \"재고\",\n  \"요약\": [\n    { \"키\": \"분석 기간\", \"값\": \"기간 문자열\" },\n    { \"키\": \"총 매출\", \"값\": \"X,XXX,XXX원\" },\n    { \"키\": \"총 주문수\", \"값\": \"XXX건\" },\n    (필요시 추가 요약 항목)\n  ],\n  \"상세데이터\": {\n    \"제목\": \"첫 번째 집계 이름\",\n    \"컬럼\": [\"컬럼1\", \"컬럼2\", \"컬럼3\", \"컬럼4\"],\n    \"행들\": [[\"값1\", \"값2\", \"값3\", \"값4\"], ...]\n  },\n  \"상세데이터2\": {       (집계가 2개 이상일 때만)\n    \"제목\": \"두 번째 집계 이름\",\n    \"컬럼\": [...],\n    \"행들\": [...]\n  },\n  \"상세데이터3\": {       (집계가 3개 이상일 때만)\n    ...\n  },\n  \"합계\": \"인사이트 불릿 리스트 (작성 규칙 참고)\"\n}\n\n## 문서코드가 \"INS\"인 경우 출력 형식\n\n{\n  \"문서코드\": \"INS\",\n  \"카테고리\": \"매출\" | \"상품\" | \"점주\" | \"재고\",\n  \"핵심요약\": \"한 줄 인사이트 메시지\",\n  \"분석근거\": [\"근거1\", \"근거2\", \"근거3\"],\n  \"참고사항\": [\"액션1\", \"액션2\"]\n}\n\n## 상세데이터 테이블 작성 규칙\n\n각 집계 데이터를 표로 변환할 때:\n\n1. 집계 이름은 \"제목\"에 그대로 사용\n2. 컬럼 구성 규칙:\n   - 그룹이 \"점주명\"인 집계 → [\"순위\", \"점포명\", \"매출\", \"비중\"]\n   - 그룹이 \"상품명\"인 집계 → [\"순위\", \"상품명\", \"수량\", \"매출\"]\n   - 그룹이 \"년월\"인 집계 → [\"년월\", \"매출\", \"주문수\"]\n3. \"비중\"은 전체총계 대비 퍼센트 (소수점 1자리)\n4. \"순위\"는 1부터 시작\n5. 금액은 \"X,XXX,XXX원\" 형식\n6. 수량은 \"XXX개\" 형식\n\n## \"합계\" 블록 작성 규칙 (⭐ 중요)\n\n\"합계\" 블록은 **데이터에서 관찰된 인사이트**를 불릿 리스트로 작성합니다.\n(실제로는 \"인사이트\" 섹션이라고 보면 됨)\n\n### 카테고리가 \"점주\"인 경우 (점주 분석 전용)\n\n불릿 리스트 형식의 인사이트 문자열로 작성:\n\n\"- 인사이트1\\n- 인사이트2\\n- 인사이트3\"\n\n각 불릿 내용:\n- 매출/수량 변화의 특이점 (급증, 급감, 계절성 등)\n- 상품 구매 패턴 특이점 (어떤 상품군/카테고리에 집중하는지)\n- 다른 점주와 차별화되는 특징\n- 4월처럼 월 중 데이터는 해석 유의 표시\n\n**포함할 것:**\n- 관찰된 현상\n- 수치 근거\n- 이 점주의 특성 해석\n\n**제외할 것:**\n- 추천 조치 (\"~하세요\", \"~권장\")\n- 전반적 총계 (이미 \"요약\" 블록에 있음)\n- 단순 정보 나열\n\n불릿 개수: 3~5개가 적당.\n\n### 카테고리가 \"매출\"/\"상품\"/\"재고\"인 경우\n\n기존과 동일하게 한 줄 요약:\n\"총 매출: X,XXX,XXX원 | XXX건 주문 | 핵심 발견 한 가지\"\n\n## 작성 규칙\n\n1. 숫자는 반드시 한국 원화 형식 (3,208,000원)\n2. 비중은 전체총계 기준으로 계산 (소수점 1자리, 예: 28.3%)\n3. \"요약\" 블록에는 필수적으로:\n   - 분석 기간\n   - 총 매출\n   - 총 주문수\n   포함. 추가로 질문 맥락에 맞는 항목 더 넣을 수 있음.\n4. 비교_전월 또는 비교_전년동월 데이터가 있으면, \"요약\" 블록에 증감률 포함\n   (예: \"전월 대비 성장률: +15.3% (▲1,234,000원)\")\n5. 질문에 \"왜\"/\"어떻게\"/\"추천\" 등의 맥락이 없으면 RPT로 작성\n\n## 아로마포레스트 도메인 지식 (분석 시 고려)\n\n- 향료는 핵심 원재료로, 공병/펌프/뚜껑 등 부자재 수요와 연동됨\n- 시향지는 소모품으로 수량은 많지만 매출 기여도는 낮음\n- 리필병 MP-코드는 향료를 담는 용기 (향료와 세트로 팔림)\n- SMBo-코드는 공병/펌프 등 부자재 식별자\n- 상품 분석 시 매출 기여도 관점과 판매 빈도 관점을 구분해서 해석\n- 향수 관련 다양한 카테고리 (향료, 공병, 베이스, 부자재)를 종합 구매하는 점주는\n  \"향수 제조 전 과정을 다루는 종합 점주\"로 해석\n- 단가가 낮은 부자재(시향지, 디퓨저 스틱)가 수량 TOP에 올라오는 것은 정상\n- 점주별 매출 차이는 \"매장 규모 + 영업력 + 고객 수요\" 복합 요인\n\n## 점주 분석 시 해석 포인트\n\n- **월별 추이**: 특정 월 집중이 있는지 → 계절성/이벤트/프로모션 추정 가능\n- **상품 구성**: 단일 카테고리 집중 vs 다양한 카테고리 → 점주 성향\n- **고가 상품 vs 저가 부자재**: 매출 TOP과 수량 TOP이 다른 경우 \n  → 향수 제조 종합 점주 (원료 + 부자재 동시 구매)\n- **급증/급감**: 전월 대비 큰 변화는 관찰 현상으로 기술 (원인 추정 포함 가능)\n- **월 중 데이터**: 해당 월이 아직 진행 중일 경우 해석 유의 표시\n\n## 예시 출력 (RPT, 매출 카테고리)\n\n{\n  \"문서코드\": \"RPT\",\n  \"카테고리\": \"매출\",\n  \"요약\": [\n    { \"키\": \"분석 기간\", \"값\": \"2026-02 ~ 2026-04 (3개월)\" },\n    { \"키\": \"총 매출\", \"값\": \"12,800,000원\" },\n    { \"키\": \"총 주문수\", \"값\": \"789건\" }\n  ],\n  \"상세데이터\": {\n    \"제목\": \"매장별 매출 TOP3\",\n    \"컬럼\": [\"순위\", \"점포명\", \"매출\", \"비중\"],\n    \"행들\": [\n      [\"1위\", \"A점\", \"3,450,000원\", \"28.3%\"],\n      [\"2위\", \"가맹점 M\", \"2,610,000원\", \"20.9%\"],\n      [\"3위\", \"K점\", \"1,870,000원\", \"14.3%\"]\n    ]\n  },\n  \"상세데이터2\": {\n    \"제목\": \"전체 상품 판매 TOP10\",\n    \"컬럼\": [\"순위\", \"상품명\", \"수량\", \"매출\"],\n    \"행들\": [\n      [\"1위\", \"시향지 (100/set)\", \"212개\", \"94,000원\"],\n      [\"2위\", \"[H-001] 에르메스 - 운 자르뎅 수르 닐\", \"67개\", \"780,000원\"]\n    ]\n  },\n  \"합계\": \"총 매출: 12,800,000원 | 789건 주문 | TOP3 매장이 전체의 63.5% 차지\"\n}\n\n## 예시 출력 (RPT, 점주 카테고리 - ⭐ 점주 분석 전용)\n\n{\n  \"문서코드\": \"RPT\",\n  \"카테고리\": \"점주\",\n  \"요약\": [\n    { \"키\": \"분석 기간\", \"값\": \"2026-02 ~ 2026-04 (3개월)\" },\n    { \"키\": \"점주\", \"값\": \"가맹점 M\" },\n    { \"키\": \"총 매출\", \"값\": \"2,610,000원\" },\n    { \"키\": \"총 주문수\", \"값\": \"118건\" },\n    { \"키\": \"총 판매 수량\", \"값\": \"392개\" }\n  ],\n  \"상세데이터\": {\n    \"제목\": \"가맹점 M 월별 매출\",\n    \"컬럼\": [\"년월\", \"매출\", \"주문수\"],\n    \"행들\": [\n      [\"2026-02\", \"520,000원\", \"45건\"],\n      [\"2026-03\", \"2,140,000원\", \"67건\"],\n      [\"2026-04\", \"473,000원\", \"6건\"]\n    ]\n  },\n  \"상세데이터2\": {\n    \"제목\": \"가맹점 M 상품별 매출 TOP10\",\n    \"컬럼\": [\"순위\", \"상품명\", \"수량\", \"매출\"],\n    \"행들\": [\n      [\"1위\", \"[S-002] 산타마리아 노벨라 - 엔젤 디 피렌체\", \"17개\", \"510,000원\"],\n      [\"2위\", \"[H-001] 에르메스 - 운 자르뎅 수르 닐\", \"16개\", \"480,000원\"]\n    ]\n  },\n  \"상세데이터3\": {\n    \"제목\": \"가맹점 M 상품별 수량 TOP10\",\n    \"컬럼\": [\"순위\", \"상품명\", \"수량\", \"매출\"],\n    \"행들\": [\n      [\"1위\", \"시향지 (100/set)\", \"40개\", \"56,000원\"],\n      [\"2위\", \"[SM-DS] 블랙/레드와인/코발트블루 디퓨저 스틱\", \"30개\", \"15,000원\"]\n    ]\n  },\n  \"합계\": \"- 3월 매출이 2,140,000원으로 전월(520,000원) 대비 5.8배 급증하며 3개월 전체의 81%를 집중\\n- 매출 TOP10 상품이 모두 300,000원대로 균등 분포, 특정 향수에 치우치지 않고 다양한 향 취급\\n- 시향지 40개, 디퓨저 스틱 30개 등 부자재를 대량 구매하는 패턴 → 향수 제조 전 과정을 다루는 종합 점주 프로파일\\n- 4월 매출 473,000원은 월 중 시점(24일 기준)으로 최종 판단 유보\"\n}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        3328,
+        96
+      ],
+      "id": "0b31cc23-cf32-4bb8-b99c-6d8e7e1dbb86",
+      "name": "리포트 생성 AI"
+    },
+    {
+      "parameters": {
+        "jsCode": "const doc = $input.first().json;\nconst parsed = JSON.parse($('JSON 파싱').first().json.parsedData);\nconst content = doc.body.content;\nconst tables = content.filter(item => item.table);\nconst requests = [];\n\n// 동적으로 '상세데이터*' 키 모두 수집\nconst tableDataList = Object.keys(parsed)\n  .filter(k => k.startsWith('상세데이터'))\n  .sort()\n  .map(k => parsed[k])\n  .filter(Boolean);\n\n// 표가 없으면 빈 요청 반환\nif (tables.length === 0) {\n  return [{ json: { fullBody: '', isEmpty: true } }];\n}\n\n// 역순 처리 (뒤 표부터 적용해야 앞 표 위치 변동 없음)\nconst tablesReversed = [...tables].reverse();\n\n// 1. 컬럼 너비 설정 (역순)\ntablesReversed.forEach((tableItem) => {\n  const tableStartIndex = tableItem.startIndex;\n  const numCols = tableItem.table.columns;\n  const widths = numCols === 2\n    ? [150, 301]\n    : Array(numCols).fill(Math.floor(451 / numCols));\n  widths.forEach((width, colIdx) => {\n    requests.push({\n      updateTableColumnProperties: {\n        tableStartLocation: { index: tableStartIndex },\n        columnIndices: [colIdx],\n        tableColumnProperties: {\n          widthType: 'FIXED_WIDTH',\n          width: { magnitude: width, unit: 'PT' }\n        },\n        fields: 'width,widthType'\n      }\n    });\n  });\n});\n\n// 2. 헤더 배경색 (역순)\ntablesReversed.forEach((tableItem, revIdx) => {\n  const originalIdx = tables.length - 1 - revIdx;\n  if (!tableDataList[originalIdx]) return;\n  \n  const tableStartIndex = tableItem.startIndex;\n  \n  requests.push({\n    updateTableCellStyle: {\n      tableRange: {\n        tableCellLocation: {\n          tableStartLocation: { index: tableStartIndex },\n          rowIndex: 0,\n          columnIndex: 0\n        },\n        rowSpan: 1,\n        columnSpan: tableItem.table.columns\n      },\n      tableCellStyle: {\n        backgroundColor: {\n          color: {\n            rgbColor: { red: 0.937, green: 0.937, blue: 0.937 }\n          }\n        }\n      },\n      fields: 'backgroundColor'\n    }\n  });\n});\n\nif (requests.length === 0) {\n  return [{ json: { fullBody: '', isEmpty: true } }];\n}\n\nconst fullBody = JSON.stringify({ requests });\nreturn [{ json: { fullBody, isEmpty: false } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4576,
+        96
+      ],
+      "id": "458f6c85-0696-48c5-a300-52751febcca3",
+      "name": "스타일 요청 생성"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $('Google Docs 생성').first().json.id }}:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.fullBody }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        5024,
+        176
+      ],
+      "id": "842ce857-51fc-4746-9d49-6bf9c2e785f2",
+      "name": "Docs 표 스타일 적용"
+    },
+    {
+      "parameters": {
+        "jsCode": "const doc = $input.first().json;\nconst parsed = JSON.parse($('JSON 파싱').first().json.parsedData);\nconst content = doc.body.content;\nconst tables = content.filter(item => item.table);\n\n// 동적으로 '상세데이터*' 키 모두 수집\nconst tableDataList = Object.keys(parsed)\n  .filter(k => k.startsWith('상세데이터'))\n  .sort()\n  .map(k => parsed[k])\n  .filter(Boolean);\n\n// 모든 셀 삽입 요청을 통합 배열에 수집\nconst allCellInserts = [];\n\ntables.forEach((tableItem, tableIdx) => {\n  const tableData = tableDataList[tableIdx];\n  if (!tableData) return;\n  \n  const allRows = [tableData.컬럼, ...tableData.행들];\n  const numCols = tableData.컬럼.length;\n  const tableStartIndex = tableItem.startIndex;\n  \n  allRows.forEach((row, r) => {\n    row.forEach((cellText, c) => {\n      if (!cellText) return;\n      const cellIndex = tableStartIndex + 3 + r * (numCols * 2 + 1) + c * 2;\n      allCellInserts.push({\n        insertText: {\n          text: cellText,\n          location: { index: cellIndex }\n        }\n      });\n    });\n  });\n});\n\n// index 내림차순 정렬 (뒤쪽부터 삽입)\nallCellInserts.sort((a, b) => b.insertText.location.index - a.insertText.location.index);\n\nif (allCellInserts.length === 0) {\n  return [{ json: { fullBody: '', isEmpty: true } }];\n}\n\nconst fullBody = JSON.stringify({ requests: allCellInserts });\nreturn [{ json: { fullBody, isEmpty: false } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5472,
+        96
+      ],
+      "id": "d7cf4f20-f906-429e-b28e-76ea5f9595b9",
+      "name": "셀 내용 요청 생성"
+    },
+    {
+      "parameters": {
+        "method": "=GET",
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $('Google Docs 생성').first().json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4352,
+        96
+      ],
+      "id": "34841c61-2039-4642-a787-491b8edcdf72",
+      "name": "스타일 적용 준비"
+    },
+    {
+      "parameters": {
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $('Google Docs 생성').first().json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        5248,
+        176
+      ],
+      "id": "86d4859f-8376-43de-a0bd-20c3a8ed2b7d",
+      "name": "셀 내용 삽입 준비"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_AROMAFOREST_SHEET_ID",
+          "mode": "list",
+          "cachedResultName": "아로마포레스트 주문 데이터",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/YOUR_GOOGLE_FILE_ID/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1479383684,
+          "mode": "list",
+          "cachedResultName": "주문_RAW",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/YOUR_GOOGLE_FILE_ID/edit#gid=1479383684"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1856,
+        96
+      ],
+      "id": "b17a43b5-de65-4477-b8db-9841b6ad38c6",
+      "name": "점주 목록 조회"
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all();\n\n// === 중복 이름 매핑 ===\nconst aliasMap = {\n  \"가맹점 O\": \"가맹점 O\",\n  \"가맹점 Q\": \"가맹점 Q\"\n};\n\n// === 활성 기준: 최근 6개월 ===\nconst ACTIVE_MONTHS = 6;\nconst cutoffDate = new Date();\ncutoffDate.setMonth(cutoffDate.getMonth() - ACTIVE_MONTHS);\n\n// === 점주별 최근 주문일 집계 ===\nconst lastOrderMap = new Map();\n\nrows.forEach(row => {\n  let name = row.json['점주명'];\n  if (!name || !name.trim()) return;\n  \n  name = aliasMap[name] || name;\n  \n  const orderDate = new Date(row.json['주문일시']);\n  if (isNaN(orderDate.getTime())) return;\n  \n  const existing = lastOrderMap.get(name);\n  if (!existing || orderDate > existing) {\n    lastOrderMap.set(name, orderDate);\n  }\n});\n\n// === 활성 점주만 필터 ===\nconst activeNames = [...lastOrderMap.entries()]\n  .filter(([name, lastDate]) => lastDate >= cutoffDate)\n  .map(([name]) => name)\n  .sort();\n\nconst nameListText = activeNames.map(n => `- ${n}`).join('\\n');\n\nreturn [{\n  json: {\n    점주_리스트: activeNames,\n    점주_리스트_텍스트: nameListText,\n    점주_개수: activeNames.length,\n    기준: `최근 ${ACTIVE_MONTHS}개월 주문 있음`,\n    기준_날짜: cutoffDate.toISOString().split('T')[0]\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        96
+      ],
+      "id": "dcca8ef0-282e-43a2-aafa-57d451c91621",
+      "name": "점주 리스트 생성"
+    },
+    {
+      "parameters": {
+        "content": "# 2026-04-24\n\n### 1. Looker Studio 운영 대시보드\n\n**목적**: 아로마포레스트 전체 운영 현황 시각화\n\n**구성**\n- 스코어카드: 총 매출, 총 주문 건, 구매수량, 선택된 기간\n- 월별 매출 추이 (영역 그래프)\n- 주문자별 매출 TOP (가로 막대)\n- 상품별 매출 TOP (가로 막대)\n\n**주요 설정**\n- 데이터 소스: 아로마포레스트 주문 데이터 > 원본 데이터 탭\n- \"선택된 기간\" 표시: 주문일 필드 MAX + 유형 \"연도 월\" + 표시 형식 \"YY-MM\"\n  - 중요: 기본 유형과 선택된 유형 둘 다 설정해야 적용됨\n- 크로스 필터링: 시계열/점주 클릭 시 반응, 상품은 교차 필터링 해제\n\n**발견한 숫자**\n- 2024-11 ~ 2026-04 누적 매출: 37억 원\n- 총 주문: 673건\n- 총 판매 수량: 13,446개\n- 2026년 2월 매출 6억 돌파 (스파이크)\n\n---\n\n### 2. 점주 분석 리포트 워크플로우\n\n**이름**: `아로마포레스트 AI 챗봇(점주분석 리포트)`\n\n**목적**: \"가맹점 M 분석해줘\" 자연어 입력 → 점주 전용 분석 Docs 자동 생성\n\n**구조**\n```\nChat Trigger\n  → 점주 목록 조회 (Google Sheets, 주문_RAW 탭)\n  → 점주 리스트 생성 (Code)\n  → 파싱 AI (점주 매칭 + 쿼리 JSON)\n  → 쿼리 정제 (Code)\n  → Sheets API 조회\n  → 데이터 필터링 (Code)\n  → 리포트 생성 AI (인사이트 중심)\n  → JSON 파싱 (Code)\n  → Google Docs 생성 + 표/스타일 삽입\n```\n\n**핵심 설계 결정**\n- 기존 WF5 복제 방식 (서브워크플로우 추출은 나중에)\n- 점주 리스트 동적 조회 (하드코딩 X)\n- 중복 이름 매핑 (`가맹점 O` → `가맹점 O`, `가맹점 Q` → `가맹점 Q`)\n- 활성 점주 필터: 최근 6개월 주문 있는 점주만 (20명)\n- Simple Memory 제거 (단발성 리포트라 불필요)\n\n**파싱 AI 프롬프트 변경점**\n- `{{ $('점주 리스트 생성').item.json.점주_리스트_텍스트 }}` 동적 주입\n- 사용자 메시지 참조: `{{ $('When chat message received').item.json.chatInput }}`\n- 기본 카테고리: \"점주\"\n- 기본 기간: 최근 3개월\n- 점주 매칭 규칙: 부분 매칭, 공백/구분자 무시\n\n**리포트 AI 프롬프트 변경점**\n- \"합계\" 블록을 한 줄 → 불릿 리스트로\n- 내용: 인사이트만 (관찰 + 해석)\n- 제외: 추천 조치, 전반적 총계 중복\n- 불릿 개수: 3~5개\n\n**생성 결과 예시 (가맹점 M)**\n- 3월 매출 전월 대비 5.8배 급증, 3개월 전체의 81% 집중\n- 매출 TOP10이 균등 분포, 다품종 소량 패턴\n- 향수 원료 + 부자재 동시 구매 → 향수 제조 종합 점주 프로파일\n- 몽탈 로즈 머스크 집중 발주 특징 (10개, 1건)\n- 4월은 월 중 데이터, 해석 유의\n\n---\n\n## 배운 것\n\n### 기술\n- Looker Studio 크로스 필터링 개념\n- 날짜 필드 설정 2단계 (데이터 유형 + 표시 형식 둘 다)\n- n8n 변수 참조 문법: `$('노드명').item.json.필드`\n- 파싱 AI 앞에 노드 추가 시 `$json` 참조 깨짐 주의\n- Simple Memory는 대화 연속성 필요할 때만\n\n### 원칙\n- \"한 AI가 너무 많은 걸 담당하면 꼬인다\" → 단일 책임\n- 동적 데이터 주입 > 하드코딩 (노드 1개 비용 감수)\n- 80점 운영 > 100점 미출시\n- 복제 후 수정 > 처음부터 리팩토링 (안정성 우선)\n\n---\n\n## 발견된 이슈 (나중에 처리)\n\n### 1. 데이터 일관성\n- Looker Studio: 원본 데이터 탭\n- n8n 워크플로우: 주문_RAW 탭\n- 필드명 다름 (주문자 이름 vs 점주명, 주문일 vs 주문일시 등)\n- 향후 Looker Studio도 주문_RAW로 통일 필요\n\n### 2. 프롬프트 도메인 지식 오류\n- AI가 \"MP-코드 리필병 향수\"라고 해석했지만\n- 실제 TOP 상품 코드는 S-, H-, B-, C-, D-, Y-, M- 등 향수 원료 코드\n- 프롬프트의 도메인 지식 설명 보완 필요\n\n### 3. \"합계\" 네이밍\n- 실제 내용은 \"인사이트\"\n- Docs 생성 코드에서 키 이름 변경 시 연쇄 수정 필요\n- 일단 프롬프트만 바꾸고 코드는 유지\n\n---\n\n## 향후 워크플로우 로드맵\n\n- WF5: 전체 매출/상품 리포트 (기존)\n- WF5-B: 점주 분석 리포트 ✅ 오늘 완성\n- WF6: 자동 주문서 생성 (Google Drive)\n- WF7: 주간 매출 리포트 (Gemini AI)\n- WF8: 월간 재주문 예측\n- Future: GA4 연계 고객 구매 패턴 분석\n\n---\n\n## 블로그 글 소재\n\n- n8n + GitHub 자동 백업 시스템\n- 무료 Looker Studio로 이커머스 대시보드\n- 점주별 AI 리포트 자동 생성\n- AI 프롬프트 인사이트 강화 리팩토링\n- Simple Memory 언제 쓰고 언제 뺄까\n- 카카오 상담톡 자동화 조사기 (왜 막혔는가)",
+        "height": 3040,
+        "width": 528
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1008,
+        0
+      ],
+      "id": "fbaa75eb-8d3b-4bfc-883e-c8c7c1b062f7",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "# AI 챗봇 (점주분석) v2 메모\n> 작성일: 2026-04-25\n> 변경: 주문_RAW 시트 구조 변경(유니크키 컬럼 추가)에 대응\n\n## 변경 내용\n\n**1. Sheets API 조회 URL**\n- A:L (12 컬럼) → A:M (13 컬럼, 유니크키 포함)\n\n**2. 데이터 필터링 노드**\n- 하드코딩 인덱스 → 헤더 기반 동적 매핑으로 전환\n- 시트 컬럼 순서가 또 바뀌어도 헤더 이름만 같으면 자동 적응\n- 헤더 누락 시 명확한 에러 throw (silent failure 방지)\n\n## 왜 동적 매핑인가\n\n기존 v1은 `idx.점주명 = 3`처럼 위치로 컬럼을 참조했음. 이러면 시트에 컬럼 하나 추가/삭제될 때마다 코드도 같이 수정해야 하고, 잊으면 silent하게 잘못된 컬럼을 읽음.\n\nv2는 헤더 행을 읽어 이름→인덱스 매핑을 만들고 그걸로 참조. 시트가 변해도 코드는 그대로. 자동화 견고성의 기본기.\n\n## 영향 없는 부분\n\n- 파싱 AI, 리포트 생성 AI 프롬프트: 변경 없음\n- Google Docs 생성 흐름: 변경 없음  \n- 점주 목록 조회(점주분석 워크플로우): Google Sheets 노드는 헤더 이름으로 접근하므로 영향 없음",
+        "height": 656,
+        "width": 976,
+        "color": 5
+      },
+      "id": "c06c6943-5e72-4b7f-84eb-6ab151ea07f3",
+      "name": "Sticky Note v2 변경이력",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        0,
+        0
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "5caeefe8-9752-4d07-bfa4-4047fe5cab8b",
+              "leftValue": "={{ $json.isEmpty }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        4800,
+        96
+      ],
+      "id": "fc12c62c-86ce-45a6-9698-383c65bfa64e",
+      "name": "If1"
+    }
+  ],
+  "connections": {
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "점주 목록 조회",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "리포트 생성 AI",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sheets API 조회": {
+      "main": [
+        [
+          {
+            "node": "데이터 필터링",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "데이터 필터링": {
+      "main": [
+        [
+          {
+            "node": "리포트 생성 AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Docs 생성": {
+      "main": [
+        [
+          {
+            "node": "Docs 텍스트+표 삽입",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JSON 파싱": {
+      "main": [
+        [
+          {
+            "node": "Google Docs 생성",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Docs 텍스트+표 삽입": {
+      "main": [
+        [
+          {
+            "node": "스타일 적용 준비",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Docs 셀 내용 삽입": {
+      "main": [
+        [
+          {
+            "node": "문서 URL 반환",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "문서 URL 반환",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Docs 셀 내용 삽입",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "파싱 AI",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "파싱 AI": {
+      "main": [
+        [
+          {
+            "node": "쿼리 정제",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "쿼리 정제": {
+      "main": [
+        [
+          {
+            "node": "Sheets API 조회",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "리포트 생성 AI": {
+      "main": [
+        [
+          {
+            "node": "JSON 파싱",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "스타일 요청 생성": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Docs 표 스타일 적용": {
+      "main": [
+        [
+          {
+            "node": "셀 내용 삽입 준비",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "셀 내용 요청 생성": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "스타일 적용 준비": {
+      "main": [
+        [
+          {
+            "node": "스타일 요청 생성",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "셀 내용 삽입 준비": {
+      "main": [
+        [
+          {
+            "node": "셀 내용 요청 생성",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "점주 목록 조회": {
+      "main": [
+        [
+          {
+            "node": "점주 리스트 생성",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "점주 리스트 생성": {
+      "main": [
+        [
+          {
+            "node": "파싱 AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "셀 내용 요청 생성",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Docs 표 스타일 적용",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "pinData": {}
+}

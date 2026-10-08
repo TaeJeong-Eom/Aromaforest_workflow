@@ -1,0 +1,283 @@
+{
+  "name": "아임웹 주문 알림",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const now = new Date();\n\n// 이번 주 월요일 계산\nconst day = now.getDay();\nconst diff = day === 0 ? 6 : day - 1;\nconst monday = new Date(now);\nmonday.setDate(now.getDate() - diff);\nmonday.setHours(0, 0, 0, 0);\n\n// timestamp 변환\nconst fromTimestamp = Math.floor(monday.getTime() / 1000);\nconst toTimestamp = Math.floor(now.getTime() / 1000);\n\nreturn [{\n  json: {\n    order_date_from: fromTimestamp,\n    order_date_to: toTimestamp\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        144
+      ],
+      "id": "357e08c8-d2a8-494e-bbf6-e30cb97fa8a4",
+      "name": "날짜 계산"
+    },
+    {
+      "parameters": {
+        "url": "https://api.imweb.me/v2/shop/orders",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "order_date_to",
+              "value": "={{ $json.order_date_to }}"
+            },
+            {
+              "name": "order_date_from",
+              "value": "={{ $json.order_date_from }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={\n  \"access-token\": \"{{ $json.access_token }}\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        896,
+        144
+      ],
+      "id": "cb9b19bc-d0bf-475c-933a-f36792b53e8e",
+      "name": "아임웹 주문 조회"
+    },
+    {
+      "parameters": {
+        "jsCode": "const allOrders = $input.first().json.data.list;\n\nconst orders = allOrders\n  .filter(order => order.complete_time === 0)\n  .slice(0, 5);\n\nif (!orders || orders.length === 0) {\n  return [{ \n    json: { \n      message: \"새 주문 없음\",\n      template_object: JSON.stringify({\n        object_type: \"text\",\n        text: \"📭 새 주문 없음\",\n        link: { web_url: \"https://aromaforest.shop\" }\n      })\n    } \n  }];\n}\n\nconst messages = orders.map(order => {\n  const date = new Date(order.order_time * 1000);\n  const timeStr = date.toLocaleString('ko-KR');\n  const price = (order.payment.total_price || 0).toLocaleString('ko-KR');\n  \n  return `🛒 주문자: ${order.orderer.name}\\n시간: ${timeStr}\\n합계: ${price}원`;\n});\n\nconst textContent = messages.join('\\n\\n');\n\nreturn [{ \n  json: { \n    message: textContent,\n    template_object: JSON.stringify({\n      object_type: \"text\",\n      text: textContent,\n      link: { web_url: \"https://aromaforest.shop\" }\n    })\n  } \n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        144
+      ],
+      "id": "90192dfe-df45-4b5d-9d78-417c36136978",
+      "name": "메세지 가공"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://kapi.kakao.com/v2/api/talk/memo/default/send",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={\n  \"Authorization\": \"Bearer {{ $('Call \\'카카오 액세스 토큰 갱신 (서브)\\'').first().json.access_token }}\"\n}",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "template_object",
+              "value": "={{ $json.template_object }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1344,
+        144
+      ],
+      "id": "f208bd81-8aa3-4ad9-b904-2ad4e2fbf6ff",
+      "name": "카톡 발송"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1,
+                2
+              ],
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        144
+      ],
+      "id": "327a93df-c697-4dcf-974a-80070f9edc51",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "content": "### 아임웹 주문 알림\n매주 월/화 아침, 미완료 주문 목록 카톡 발송\n\n언제? 자동. 알림 오면 주문 확인",
+        "height": 112,
+        "width": 320
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "b65b2c8e-b4d4-49cb-864c-575c910e06b3",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "zgsB4cWyOcQ0oqas",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/zgsB4cWyOcQ0oqas",
+          "cachedResultName": "카카오 액세스 토큰 갱신 (서브)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [
+            "test"
+          ],
+          "schema": [
+            {
+              "id": "test",
+              "displayName": "test",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        224,
+        144
+      ],
+      "id": "82820b08-ba13-466b-94de-ca966c0ac5e4",
+      "name": "Call '카카오 액세스 토큰 갱신 (서브)'"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "ec91tTqNK7ZTIQ5J",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/ec91tTqNK7ZTIQ5J",
+          "cachedResultName": "아임웹 인증 (서브)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [
+            "test"
+          ],
+          "schema": [
+            {
+              "id": "test",
+              "displayName": "test",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        672,
+        144
+      ],
+      "id": "0128a6de-1956-45be-91c9-071653100650",
+      "name": "Call '아임웹 인증 (서브)'"
+    }
+  ],
+  "connections": {
+    "날짜 계산": {
+      "main": [
+        [
+          {
+            "node": "Call '아임웹 인증 (서브)'",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "아임웹 주문 조회": {
+      "main": [
+        [
+          {
+            "node": "메세지 가공",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "메세지 가공": {
+      "main": [
+        [
+          {
+            "node": "카톡 발송",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Call '카카오 액세스 토큰 갱신 (서브)'",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call '카카오 액세스 토큰 갱신 (서브)'": {
+      "main": [
+        [
+          {
+            "node": "날짜 계산",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call '아임웹 인증 (서브)'": {
+      "main": [
+        [
+          {
+            "node": "아임웹 주문 조회",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "pinData": {}
+}

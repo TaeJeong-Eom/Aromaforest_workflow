@@ -1,0 +1,678 @@
+{
+  "name": "아로마포레스트 AI 챗봇",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        2688,
+        96
+      ],
+      "id": "d8d7c54c-a75a-450e-987f-388d9d943b47",
+      "name": "When chat message received"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "claude-sonnet-4-6",
+          "mode": "list",
+          "cachedResultName": "Claude Sonnet 4.6"
+        },
+        "options": {
+          "thinking": true
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        4016,
+        320
+      ],
+      "id": "646849da-b9d1-4e2f-885c-a1cc95c32b2c",
+      "name": "Anthropic Chat Model"
+    },
+    {
+      "parameters": {
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/YOUR_AROMAFOREST_SHEET_ID/values/%EC%A3%BC%EB%AC%B8_RAW!A:M",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "key",
+              "value": "{{KEY}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        3488,
+        96
+      ],
+      "id": "46c8180b-83cb-4114-9df9-32104fd33d28",
+      "name": "Sheets API 조회"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// 데이터 필터링 (쿼리 JSON 기반 범용 집계 엔진)\n// ============================================\n\nconst meta = $('쿼리 정제').first().json;\nconst rows = $input.first().json.values ?? [];\nconst [header, ...dataRows] = rows;\n\n// 열 인덱스 동적 매핑 (헤더 기준 — 시트 구조 변경에 견고)\nconst headerMap = Object.fromEntries(header.map((h, i) => [h, i]));\nconst idx = {\n  주문일시: headerMap['주문일시'],\n  점주명: headerMap['점주명'],\n  상품명: headerMap['상품명'],\n  옵션값: headerMap['옵션값'],\n  수량: headerMap['수량'],\n  단가: headerMap['단가']\n};\n\n// 헤더 누락 검증 (운영 안전장치)\nconst missingCols = Object.entries(idx)\n  .filter(([_, v]) => v === undefined)\n  .map(([k]) => k);\nif (missingCols.length > 0) {\n  throw new Error(`주문_RAW 시트에서 다음 컬럼을 찾을 수 없습니다: ${missingCols.join(', ')}`);\n}\n\n// 상품 표시 헬퍼 (상품명 + 옵션값)\nconst 상품표시 = (row) => {\n  const 명 = row[idx.상품명] || '';\n  const 옵 = row[idx.옵션값] || '';\n  if (명 && 옵) return `${명} (${옵})`;\n  return 명 || 옵 || '미상';\n};\n\n// ---------- 1. 필터링 ----------\nconst filterRow = (row, 필터) => {\n  // 점주 필터\n  if (필터.점주 && 필터.점주.length > 0) {\n    if (!필터.점주.includes(row[idx.점주명])) return false;\n  }\n  \n  // 기간 필터\n  const 년월 = (row[idx.주문일시] || '').slice(0, 7);\n  if (필터.기간시작 && 년월 < 필터.기간시작) return false;\n  if (필터.기간종료 && 년월 > 필터.기간종료) return false;\n  \n  // 상품 키워드 필터\n  if (필터.상품키워드 && 필터.상품키워드.length > 0) {\n    const 상품전체 = `${row[idx.상품명] || ''} ${row[idx.옵션값] || ''}`;\n    const 매칭 = 필터.상품키워드.some(k => 상품전체.includes(k));\n    if (!매칭) return false;\n  }\n  \n  return true;\n};\n\n// ---------- 2. 집계 함수 ----------\nconst 집계수행 = (rows, 스펙) => {\n  const 그룹 = {};\n  \n  for (const row of rows) {\n    // 그룹 키 생성\n    const 키 = 스펙.그룹.map(g => {\n      if (g === '점주명') return row[idx.점주명] || '미상';\n      if (g === '상품명') return 상품표시(row);\n      if (g === '년월') return (row[idx.주문일시] || '').slice(0, 7);\n      return '';\n    }).join(' | ');\n    \n    if (!키) continue;\n    \n    const 수량 = parseInt(row[idx.수량]) || 0;\n    const 단가 = parseInt(row[idx.단가]) || 0;\n    const 매출 = 수량 * 단가;\n    \n    if (!그룹[키]) 그룹[키] = { 매출: 0, 수량: 0, 주문수: 0 };\n    그룹[키].매출 += 매출;\n    그룹[키].수량 += 수량;\n    그룹[키].주문수 += 1;\n  }\n  \n  // 정렬\n  let 엔트리 = Object.entries(그룹);\n  if (스펙.정렬 === '매출내림차순') 엔트리.sort((a, b) => b[1].매출 - a[1].매출);\n  else if (스펙.정렬 === '수량내림차순') 엔트리.sort((a, b) => b[1].수량 - a[1].수량);\n  else if (스펙.정렬 === '년월오름차순') 엔트리.sort((a, b) => a[0].localeCompare(b[0]));\n  \n  // 상위 N\n  if (스펙.상위N && 스펙.상위N > 0) {\n    엔트리 = 엔트리.slice(0, 스펙.상위N);\n  }\n  \n  return Object.fromEntries(엔트리);\n};\n\n// ---------- 3. 메인 실행 ----------\nconst 필터링된 = dataRows.filter(row => filterRow(row, meta.필터 ?? {}));\n\nconst 결과 = {\n  기간: `${meta.필터?.기간시작 ?? '전체'} ~ ${meta.필터?.기간종료 ?? '전체'}`,\n  점주필터: meta.필터?.점주 ?? '전체',\n  필터링행수: 필터링된.length\n};\n\n// 각 집계 수행\nfor (const 스펙 of meta.집계 ?? []) {\n  결과[스펙.이름] = 집계수행(필터링된, 스펙);\n}\n\n// 전체 총계 (항상 포함)\n결과.전체총계 = {\n  매출: 필터링된.reduce((s, r) => s + (parseInt(r[idx.수량]) || 0) * (parseInt(r[idx.단가]) || 0), 0),\n  수량: 필터링된.reduce((s, r) => s + (parseInt(r[idx.수량]) || 0), 0),\n  주문수: 필터링된.length\n};\n\n// ---------- 4. 비교 집계 (전월대비) ----------\nif (meta.비교?.전월대비 && meta.필터?.기간시작) {\n  const 전월 = (() => {\n    const [y, m] = meta.필터.기간시작.split('-').map(Number);\n    const d = new Date(y, m - 2, 1);\n    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;\n  })();\n  \n  const 전월행 = dataRows.filter(row => {\n    if (meta.필터.점주 && meta.필터.점주.length > 0) {\n      if (!meta.필터.점주.includes(row[idx.점주명])) return false;\n    }\n    const 년월 = (row[idx.주문일시] || '').slice(0, 7);\n    return 년월 === 전월;\n  });\n  \n  결과.비교_전월 = {\n    기간: 전월,\n    매출: 전월행.reduce((s, r) => s + (parseInt(r[idx.수량]) || 0) * (parseInt(r[idx.단가]) || 0), 0),\n    수량: 전월행.reduce((s, r) => s + (parseInt(r[idx.수량]) || 0), 0),\n    주문수: 전월행.length\n  };\n}\n\n// ---------- 5. 비교 집계 (전년동월대비) ----------\nif (meta.비교?.전년동월대비 && meta.필터?.기간시작) {\n  const 전년동월 = (() => {\n    const [y, m] = meta.필터.기간시작.split('-').map(Number);\n    return `${y - 1}-${String(m).padStart(2, '0')}`;\n  })();\n  \n  const 전년행 = dataRows.filter(row => {\n    if (meta.필터.점주 && meta.필터.점주.length > 0) {\n      if (!meta.필터.점주.includes(row[idx.점주명])) return false;\n    }\n    const 년월 = (row[idx.주문일시] || '').slice(0, 7);\n    return 년월 === 전년동월;\n  });\n  \n  결과.비교_전년동월 = {\n    기간: 전년동월,\n    매출: 전년행.reduce((s, r) => s + (parseInt(r[idx.수량]) || 0) * (parseInt(r[idx.단가]) || 0), 0),\n    수량: 전년행.reduce((s, r) => s + (parseInt(r[idx.수량]) || 0), 0),\n    주문수: 전년행.length\n  };\n}\n\n// ---------- 6. 최종 반환 ----------\nreturn [{\n  json: {\n    ...meta,\n    data: JSON.stringify(결과),\n    dataSize: JSON.stringify(결과).length\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3712,
+        96
+      ],
+      "id": "a8e789b4-4007-4c3a-b121-abbffe809032",
+      "name": "데이터 필터링"
+    },
+    {
+      "parameters": {
+        "folderId": "default",
+        "title": "={{ $json.문서번호 }}"
+      },
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        4512,
+        96
+      ],
+      "id": "58f6927a-e42c-4434-8646-81698b46c296",
+      "name": "Google Docs 생성"
+    },
+    {
+      "parameters": {
+        "jsCode": "const docId = $('Google Docs 생성').first().json.id;\nconst docUrl = `https://docs.google.com/document/d/${docId}`;\n\nreturn [{\n  json: {\n    output: `분석 완료! 문서 링크: ${docUrl}`\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6752,
+        96
+      ],
+      "id": "d433f7fc-0bce-4a60-a821-e6ad0a65579b",
+      "name": "문서 URL 반환"
+    },
+    {
+      "parameters": {
+        "jsCode": "const meta = $('데이터 필터링').first().json;\nconst raw = $('Report').first().json.output;\nlet parsed;\ntry {\n  const cleaned = raw.replace(/```json/g, '').replace(/```/g, '').trim();\n  parsed = JSON.parse(cleaned);\n} catch(e) {\n  parsed = { 문서코드: 'RPT', 오류: 'JSON 파싱 실패' };\n}\nconst 문서코드 = parsed.문서코드 ?? meta.문서코드;\nconst 카테고리 = parsed.카테고리 ?? meta.카테고리;\nconst 구분선 = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\n';\nconst requests = [];\nlet currentIndex = 1;\n\nconst append = (text) => {\n  requests.push({\n    insertText: {\n      text,\n      endOfSegmentLocation: { segmentId: '' }\n    }\n  });\n  currentIndex += text.length;\n};\n\nconst appendHeading2 = (text) => {\n  const startIdx = currentIndex;\n  append(text);\n  requests.push({\n    updateParagraphStyle: {\n      range: { startIndex: startIdx, endIndex: startIdx + text.length - 1 },\n      paragraphStyle: { namedStyleType: 'HEADING_4' },\n      fields: 'namedStyleType'\n    }\n  });\n};\n\n// 헤더\nappend('AROMAFOREST\\n');\nappend('\\n');\nappend(`문서번호: ${meta.문서번호}\\n`);\nappend(`생성일시: ${meta.생성일시}\\n`);\nappend(`문서유형: ${문서코드 === 'RPT' ? '데이터분석' : '인사이트'} | 카테고리: ${카테고리}\\n`);\nappend('\\n');\nappend(구분선);\n\n// AROMAFOREST 폰트 스타일\nrequests.push({\n  updateTextStyle: {\n    range: { startIndex: 1, endIndex: 13 },\n    textStyle: { fontSize: { magnitude: 20, unit: 'PT' } },\n    fields: 'fontSize'\n  }\n});\n\nif (문서코드 === 'RPT') {\n  // 01. 요약\n  appendHeading2('01. 요약\\n');\n  for (const item of parsed.요약 ?? []) {\n    append(`  ${item.키}: ${item.값}\\n`);\n  }\n  \n  // 02. 상세 데이터\n  appendHeading2('02. 상세 데이터\\n');\n  \n  // 🆕 동적으로 '상세데이터*' 키 모두 수집\n  const tables = Object.keys(parsed)\n    .filter(k => k.startsWith('상세데이터'))\n    .sort()\n    .map(k => parsed[k])\n    .filter(Boolean);\n  \n  for (const table of tables) {\n    append(`\\n${table.제목}\\n`);\n    requests.push({\n      insertTable: {\n        rows: table.행들.length + 1,\n        columns: table.컬럼.length,\n        endOfSegmentLocation: { segmentId: '' }\n      }\n    });\n    append('\\n');\n  }\n  \n  // 03. 인사이트 (표 이후라 index 추적 없이 삽입만)\n  if (parsed.인사이트?.length > 0) {\n    requests.push({ insertText: { text: '03. 인사이트\\n', endOfSegmentLocation: { segmentId: '' } } });\n    for (const item of parsed.인사이트) {\n      requests.push({ insertText: { text: `  • ${item}\\n`, endOfSegmentLocation: { segmentId: '' } } });\n    }\n  }\n  \n  requests.push({ insertText: { text: `${parsed.합계 ?? ''}\\n`, endOfSegmentLocation: { segmentId: '' } } });\n  requests.push({ insertText: { text: 구분선, endOfSegmentLocation: { segmentId: '' } } });\n} else {\n  appendHeading2('01. 핵심 요약\\n');\n  append(`  ${parsed.핵심요약 ?? ''}\\n`);\n  appendHeading2('02. 분석 근거\\n');\n  for (const item of parsed.분석근거 ?? []) {\n    append(`  • ${item}\\n`);\n  }\n  appendHeading2('03. 참고 사항\\n');\n  for (const item of parsed.참고사항 ?? []) {\n    append(`  • ${item}\\n`);\n  }\n}\n\nrequests.push({ insertText: { text: '생성: 아로마포레스트 AI 분석 시스템\\n', endOfSegmentLocation: { segmentId: '' } } });\n\nconst fullBody = JSON.stringify({ requests });\nreturn [{\n  json: {\n    fullBody,\n    parsedData: JSON.stringify(parsed),\n    문서번호: meta.문서번호,\n    문서코드,\n    카테고리\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4288,
+        96
+      ],
+      "id": "948ee0af-7f56-4fd3-9b1c-1c0bd70f9a71",
+      "name": "JSON 파싱"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $('Google Docs 생성').first().json.id }}:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $('JSON 파싱').first().json.fullBody }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4736,
+        96
+      ],
+      "id": "246f32a0-918a-4b82-9883-0ff1aaf59541",
+      "name": "Docs 텍스트+표 삽입"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $('Google Docs 생성').first().json.id }}:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.fullBody }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        6528,
+        176
+      ],
+      "id": "619afafe-4ee7-42e1-ac4d-b1d2fb7eb597",
+      "name": "Docs 셀 내용 삽입"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "5caeefe8-9752-4d07-bfa4-4047fe5cab8b",
+              "leftValue": "={{ $json.isEmpty }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        6304,
+        96
+      ],
+      "id": "a2d785cc-8538-4991-818c-ef73e27801ad",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "claude-haiku-4-5-20251001",
+          "mode": "list",
+          "cachedResultName": "Claude Haiku 4.5"
+        },
+        "options": {
+          "maxTokensToSample": 1000,
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        2992,
+        320
+      ],
+      "id": "75d0cc95-fbe8-45f8-b961-ffee3acd6d09",
+      "name": "Anthropic Chat Model1"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 파싱 AI 출력 정제\nconst raw = $input.first().json.output;\nlet query;\ntry {\n  const cleaned = raw.replace(/```json/g, '').replace(/```/g, '').trim();\n  query = JSON.parse(cleaned);\n} catch(e) {\n  query = {\n    문서코드: 'RPT',\n    카테고리: '매출',\n    필터: { 점주: null, 기간시작: null, 기간종료: null, 상품키워드: null },\n    집계: [],\n    비교: { 전월대비: false, 전년동월대비: false },\n    오류: 'AI 출력 파싱 실패: ' + e.message\n  };\n}\n\n// 문서 메타 생성\nconst now = new Date();\nconst 생성일시 = now.toISOString().slice(0, 16).replace('T', ' ');\nconst dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');\nconst timeStr = now.toTimeString().slice(0, 8).replace(/:/g, '');  // HHmmss\nconst 문서번호 = `${query.문서코드}-${dateStr}-${timeStr}`;\n\n// 원본 질문 가져오기 (Chat Trigger 노드 이름 확인 필요)\nconst question = $('When chat message received').first().json.chatInput ?? '';\n\nreturn [{\n  json: {\n    question,\n    문서번호,\n    생성일시,\n    ...query\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3264,
+        96
+      ],
+      "id": "95431cb6-ee27-4ae6-9982-5970be60a679",
+      "name": "쿼리 정제"
+    },
+    {
+      "parameters": {
+        "jsCode": "const doc = $input.first().json;\nconst parsed = JSON.parse($('JSON 파싱').first().json.parsedData);\nconst content = doc.body.content;\nconst tables = content.filter(item => item.table);\nconst requests = [];\n\n// 동적으로 '상세데이터*' 키 모두 수집\nconst tableDataList = Object.keys(parsed)\n  .filter(k => k.startsWith('상세데이터'))\n  .sort()\n  .map(k => parsed[k])\n  .filter(Boolean);\n\n// 표가 없으면 빈 요청 반환\nif (tables.length === 0) {\n  return [{ json: { fullBody: '', isEmpty: true } }];\n}\n\n// 역순 처리 (뒤 표부터 적용해야 앞 표 위치 변동 없음)\nconst tablesReversed = [...tables].reverse();\n\n// 1. 컬럼 너비 설정 (역순)\ntablesReversed.forEach((tableItem) => {\n  const tableStartIndex = tableItem.startIndex;\n  const numCols = tableItem.table.columns;\n  const widths = numCols === 2\n    ? [150, 301]\n    : Array(numCols).fill(Math.floor(451 / numCols));\n  widths.forEach((width, colIdx) => {\n    requests.push({\n      updateTableColumnProperties: {\n        tableStartLocation: { index: tableStartIndex },\n        columnIndices: [colIdx],\n        tableColumnProperties: {\n          widthType: 'FIXED_WIDTH',\n          width: { magnitude: width, unit: 'PT' }\n        },\n        fields: 'width,widthType'\n      }\n    });\n  });\n});\n\n// 2. 헤더 배경색 (역순)\ntablesReversed.forEach((tableItem, revIdx) => {\n  const originalIdx = tables.length - 1 - revIdx;\n  if (!tableDataList[originalIdx]) return;\n  \n  const tableStartIndex = tableItem.startIndex;\n  \n  requests.push({\n    updateTableCellStyle: {\n      tableRange: {\n        tableCellLocation: {\n          tableStartLocation: { index: tableStartIndex },\n          rowIndex: 0,\n          columnIndex: 0\n        },\n        rowSpan: 1,\n        columnSpan: tableItem.table.columns\n      },\n      tableCellStyle: {\n        backgroundColor: {\n          color: {\n            rgbColor: { red: 0.937, green: 0.937, blue: 0.937 }\n          }\n        }\n      },\n      fields: 'backgroundColor'\n    }\n  });\n});\n\nif (requests.length === 0) {\n  return [{ json: { fullBody: '', isEmpty: true } }];\n}\n\nconst fullBody = JSON.stringify({ requests });\nreturn [{ json: { fullBody, isEmpty: false } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5184,
+        96
+      ],
+      "id": "15ad718d-b2d3-4ce8-909a-5987ee12b6c2",
+      "name": "스타일 요청 생성"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $('Google Docs 생성').first().json.id }}:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.fullBody }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        5632,
+        176
+      ],
+      "id": "2e218bed-a142-4281-9a8a-12139c8a8861",
+      "name": "Docs 표 스타일 적용"
+    },
+    {
+      "parameters": {
+        "jsCode": "const doc = $input.first().json;\nconst parsed = JSON.parse($('JSON 파싱').first().json.parsedData);\nconst content = doc.body.content;\nconst tables = content.filter(item => item.table);\n\n// 동적으로 '상세데이터*' 키 모두 수집\nconst tableDataList = Object.keys(parsed)\n  .filter(k => k.startsWith('상세데이터'))\n  .sort()\n  .map(k => parsed[k])\n  .filter(Boolean);\n\n// 모든 셀 삽입 요청을 통합 배열에 수집\nconst allCellInserts = [];\n\ntables.forEach((tableItem, tableIdx) => {\n  const tableData = tableDataList[tableIdx];\n  if (!tableData) return;\n  \n  const allRows = [tableData.컬럼, ...tableData.행들];\n  const numCols = tableData.컬럼.length;\n  const tableStartIndex = tableItem.startIndex;\n  \n  allRows.forEach((row, r) => {\n    row.forEach((cellText, c) => {\n      if (!cellText) return;\n      const cellIndex = tableStartIndex + 3 + r * (numCols * 2 + 1) + c * 2;\n      allCellInserts.push({\n        insertText: {\n          text: cellText,\n          location: { index: cellIndex }\n        }\n      });\n    });\n  });\n});\n\n// index 내림차순 정렬 (뒤쪽부터 삽입)\nallCellInserts.sort((a, b) => b.insertText.location.index - a.insertText.location.index);\n\nif (allCellInserts.length === 0) {\n  return [{ json: { fullBody: '', isEmpty: true } }];\n}\n\nconst fullBody = JSON.stringify({ requests: allCellInserts });\nreturn [{ json: { fullBody, isEmpty: false } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6080,
+        96
+      ],
+      "id": "24f846b3-5156-4d30-b8ae-29c3efb7223b",
+      "name": "셀 내용 요청 생성"
+    },
+    {
+      "parameters": {
+        "method": "=GET",
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $('Google Docs 생성').first().json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4960,
+        96
+      ],
+      "id": "155642e4-a7b1-4d10-a94a-df868563bcfd",
+      "name": "스타일 적용 준비"
+    },
+    {
+      "parameters": {
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $('Google Docs 생성').first().json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        5856,
+        176
+      ],
+      "id": "5b10a3e0-8547-42ab-80b1-53970e3443f3",
+      "name": "셀 내용 삽입 준비"
+    },
+    {
+      "parameters": {
+        "content": "# 아로마포레스트 AI 챗봇 워크플로우 설계 메모\n\n> 작성일: 2026-04-26\n> 대상: 아로마포레스트 AI 챗봇 (WF5)\n> 노드 수: 24개 (sticky note 제외 22개)\n> 작성 목적: 구조 이해 + 미래의 형(또는 인계 받는 누군가)을 위한 안내서\n\n---\n\n## 한 줄 요약\n\n자연어 질문(예: \"가맹점 O 이번달 매출 분석해줘\")을 받아 → 시트 데이터 조회 → 집계 → AI 인사이트 생성 → Google Docs 리포트로 출력하는 워크플로우.\n\n---\n\n## 전체 흐름\n\n```\n[질문 입력]\n    ↓\n[1. 질문 해석] → 파싱 AI → 쿼리 정제 (질문 → JSON 쿼리)\n    ↓\n[2. 데이터 처리] → Sheets API 조회 → 데이터 필터링 (시트 → 집계 결과)\n    ↓\n[3. 인사이트 생성] → 리포트 생성 AI → JSON 파싱 (데이터 → 리포트 JSON → Docs API 요청)\n    ↓\n[4. 문서 작성] → Google Docs 생성 → 텍스트+표 삽입 → 스타일 적용 → 셀 내용 삽입\n    ↓\n[5. 결과 반환] → 문서 URL 반환\n```\n\n---\n\n## 노드별 역할\n\n### 1. 입력 처리 (3개)\n\n| 노드 | 역할 | 비고 |\n|---|---|---|\n| When chat message received | n8n 챗봇 UI 진입점 | 일상적 사용 경로 |\n| Webhook | 외부 호출용 진입점 | 현재 미사용 — 추후 웹 구축 시 활용 예정 |\n| 파싱 AI (Anthropic) | 자연어 질문을 구조화된 의도로 분류 | 문서코드(RPT/INS), 카테고리, 필터 추출 |\n\n**설계 의도**: 두 입력 경로가 한 처리 흐름을 공유. 진입점이 무엇이든 동일한 분석 결과 보장.\n\n---\n\n### 2. 질문 → 쿼리 변환 (1개)\n\n| 노드 | 역할 |\n|---|---|\n| 쿼리 정제 (Code) | 파싱 AI의 출력 JSON을 정제하고 문서번호 생성 |\n\n**핵심 로직**:\n- AI 출력의 markdown 코드 블록 제거 (```json 등)\n- JSON.parse 실패 시 안전한 기본값으로 폴백 (워크플로우 중단 방지)\n- 문서번호 생성 규칙: `{문서코드}-{YYYYMMDD}-{HHmmss}` (예: `RPT-20260426-153022`)\n- 원본 질문(`chatInput`) 보존하여 후속 노드에 전달\n\n**설계 의도**: AI 출력은 항상 깨질 수 있다는 전제. try-catch로 모든 실행이 끝까지 흘러가도록 보장.\n\n---\n\n### 3. 데이터 처리 (2개)\n\n| 노드 | 역할 |\n|---|---|\n| Sheets API 조회 (HTTP GET) | 주문_RAW 시트의 A:M 범위 데이터 가져오기 |\n| 데이터 필터링 (Code) | 쿼리 JSON 기반으로 데이터 필터링·집계 |\n\n**Sheets API 조회 핵심**:\n- URL 끝의 range가 `A:M` (유니크키 컬럼 추가 후 13개 컬럼)\n- 시트 구조 변경 시 이 값도 함께 갱신 필요\n\n**데이터 필터링 핵심 로직**:\n- 헤더 기반 동적 컬럼 매핑 (`headerMap`) — 시트 구조 변화에 견고\n- 헤더 누락 시 명확한 에러 throw (silent failure 방지)\n- 점주·기간·상품 필터 적용\n- 매출(단가×수량), 수량, 주문수 집계\n- 전월대비·전년동월대비 비교 로직 (필요 시)\n\n**설계 의도**: 컬럼 위치 참조가 아닌 컬럼 이름 참조. 시트가 또 바뀌어도 헤더 이름만 같으면 안 깨짐.\n\n---\n\n### 4. 인사이트 생성 (3개)\n\n| 노드 | 역할 |\n|---|---|\n| 리포트 생성 AI (Anthropic) | 집계 데이터를 받아 인사이트 리포트 JSON 생성 |\n| JSON 파싱 (Code) | AI 출력을 Google Docs API용 batchUpdate 요청으로 변환 |\n\n**JSON 파싱 핵심 로직**:\n- AI 출력 markdown 정제 후 JSON 파싱\n- 문서코드(RPT/INS)에 따라 다른 구조 생성\n  - **RPT (분석 리포트)**: 요약 → 상세데이터(표) → 인사이트\n  - **INS (인사이트 리포트)**: 핵심요약 → 분석근거 → 참고사항\n- `insertText` 요청을 순서대로 누적\n- `insertTable` 요청 (RPT만)\n- 최종 출력: `{ fullBody, parsedData, 문서번호, 문서코드, 카테고리 }`\n\n**설계 의도**: AI는 인사이트 생성에만 집중, 코드는 Docs API 형식 변환에만 집중. 책임 분리.\n\n---\n\n### 5. 문서 작성 (8개) ⭐ 핵심 영역\n\n이 영역이 가장 복잡하지만 가장 중요한 부분. Google Docs API의 특성에서 비롯된 구조.\n\n```\nGoogle Docs 생성\n    ↓\nDocs 텍스트+표 삽입 (batchUpdate 1회차)\n    ↓\n스타일 적용 준비 (GET — 인덱스 재조회) ◀ 표 삽입 후 인덱스 변경됨\n    ↓\n스타일 요청 생성 (Code)\n    ↓\n[If1: isEmpty?]\n  ├─ true (표 없음) → 셀 내용 요청 생성\n  └─ false (표 있음) → Docs 표 스타일 적용 (batchUpdate 2회차) → 셀 내용 삽입 준비\n    ↓\n셀 내용 삽입 준비 (GET — 인덱스 재조회) ◀ 스타일 적용 후에도 인덱스 재확인 필수\n    ↓\n셀 내용 요청 생성 (Code)\n    ↓\n[If: isEmpty?]\n  ├─ true (셀 내용 없음) → 문서 URL 반환\n  └─ false (셀 내용 있음) → Docs 셀 내용 삽입 (batchUpdate 3회차) → 문서 URL 반환\n```\n\n**왜 batchUpdate를 3단계로 나눴나**\n\nGoogle Docs API는 한 batchUpdate 안에서 \"텍스트 삽입 → 표 삽입 → 스타일 적용 → 셀 내용 삽입\"을 한꺼번에 보내면 인덱스 계산이 꼬임. 이전 작업의 결과를 다음 작업이 모르기 때문.\n\n따라서 각 단계 사이에 **GET으로 문서 현재 상태를 다시 조회**하여 정확한 인덱스를 확보한 뒤 다음 batchUpdate 요청을 만듦.\n\n**왜 GET 노드가 두 개인가**\n\n`스타일 적용 준비`와 `셀 내용 삽입 준비` — URL과 메서드가 동일해서 중복으로 보이지만, 의도된 분리.\n\n표 스타일 적용 작업이 인덱스를 변경하는 케이스가 있어서, **스타일 적용 후에도 인덱스를 재조회하지 않으면 셀 내용 삽입 위치가 어긋남**. 시행착오 끝에 분리한 구조이므로 통합하지 말 것.\n\n**두 IF 노드의 역할 (`If1`, `If`)**\n\n- `If1` (`스타일 요청 생성` 다음): 표가 없는 INS 리포트일 때 표 스타일 적용 단계 우회\n- `If` (`셀 내용 요청 생성` 다음): 셀 내용이 없을 때 셀 내용 삽입 단계 우회\n\n두 IF 모두 조건이 `{{ $json.isEmpty }} is true`로 통일. 이전 Code 노드에서 `isEmpty` 플래그를 명시적으로 출력하도록 설계되어 있음.\n\n**설계 의도**: INS 리포트는 표 없이도 정상 생성되어야 함. 빈 batchUpdate 요청은 Google API에서 \"Root element must be a message\" 에러를 내므로 IF로 우회 처리.\n\n---\n\n### 6. 결과 반환 (1개)\n\n| 노드 | 역할 |\n|---|---|\n| 문서 URL 반환 (Code) | 생성된 Docs ID로 URL을 만들어 챗봇에 응답 |\n\n응답 메시지: `\"분석 완료! 문서 링크: https://docs.google.com/document/d/{docId}\"`\n\n---\n\n## 핵심 설계 원칙\n\n### 1. 책임 분리\n\n각 노드가 하나의 일만 함:\n- 파싱 AI: 의도 추출\n- 쿼리 정제: AI 출력 정제 + 메타 생성\n- 데이터 필터링: 시트 데이터 가공\n- 리포트 생성 AI: 인사이트 생성\n- JSON 파싱: Docs API 형식 변환\n- 각 HTTP 노드: API 호출만\n\n\"한 AI에 너무 많은 책임 회피\" 원칙의 구현.\n\n### 2. 동적 매핑 우선\n\n위치(인덱스) 참조가 아닌 이름 참조:\n- 시트 컬럼: `headerMap['점주명']` (인덱스 하드코딩 회피)\n- AI 출력 키: `parsed.요약 ?? parsed.핵심요약` (구조 변화 흡수)\n\n### 3. Silent failure 방지\n\nAI 출력 파싱 실패 시 워크플로우 중단 대신:\n- 안전한 기본값으로 폴백 (`쿼리 정제`, `JSON 파싱`)\n- 헤더 누락 시 명시적 에러 throw (`데이터 필터링`)\n\n문제가 생겨도 어디서 생겼는지 명확히 보이도록.\n\n### 4. Google Docs API 인덱스 안정성\n\n문서 수정의 각 단계 사이에 **GET으로 현재 상태 재조회**.\nbatchUpdate 작업이 인덱스를 바꿀 수 있으므로, 다음 단계는 항상 최신 인덱스 기반으로 요청 생성.\n\n### 5. 문서코드 분기\n\n`RPT` (분석 리포트) vs `INS` (인사이트 리포트):\n- 표 유무\n- 섹션 구성\n- batchUpdate 요청 구조\n\n`isEmpty` 플래그를 통한 IF 분기로 두 유형을 한 워크플로우에서 처리.\n\n---\n\n## 알려진 제약 / 향후 개선 여지\n\n### 운영 중 발견된 이슈\n\n- **AI 도메인 지식 오류**: \"MP-코드 = 리필병\" 설명이 매출 TOP10 상품 코드(S-, H-, B-, C-)에 부정확하게 적용됨. 향수 원료 코드 vs 부자재 코드 구분 보완 필요.\n- **\"합계\" 네이밍**: 실제 내용은 \"인사이트\"이나 Docs 생성 코드 키 변경 시 연쇄 수정 필요. 일단 프롬프트만 변경, 코드 유지.\n\n### 보류된 개선\n\n- **Webhook 활용**: 추후 웹 구축 시 외부 호출 처리. 현재는 placeholder.\n- **점주 분석 워크플로우와의 통합**: 현재 별도 워크플로우(아로마포레스트 AI 챗봇 점주분석 리포트). 책임 분리 차원에서 의도된 분리이며 통합 계획 없음.\n- **파일명 규칙 적용**: `쿼리 정제` 노드의 문서번호를 `YYYY-MM-DD_문서타입_엔터티` 형식으로 정리 가능. 별도 작업으로 진행됨.\n\n---\n\n## 디버깅 가이드\n\n| 증상 | 의심 노드 | 점검 포인트 |\n|---|---|---|\n| 모든 결과 0건 | 데이터 필터링 | 헤더 매핑, 필터 조건 |\n| AI 응답이 JSON 아님 | 쿼리 정제, JSON 파싱 | 폴백이 발동했는지 (`오류` 필드 확인) |\n| Docs 생성은 됐는데 비어있음 | Docs 텍스트+표 삽입 | `fullBody`가 빈 객체인지 |\n| \"Root element must be a message\" 에러 | If1, If | isEmpty 플래그 확인, IF 조건 |\n| 표 스타일 안 먹음 | 스타일 적용 준비 | GET 응답에서 표 위치 확인 |\n| 셀 내용 위치 어긋남 | 셀 내용 삽입 준비 | 스타일 적용 후 인덱스 재조회됐는지 |\n| 인덱스 에러 | batchUpdate 노드들 | 이전 GET이 누락됐는지, 순서가 맞는지 |\n\n---\n\n## 변경 이력\n\n- 2026-04-25: 시트 구조 변경(유니크키 컬럼 추가) 대응 — Sheets API URL `A:L → A:M`, 데이터 필터링 동적 매핑 전환\n- 2026-04-26: INS 리포트의 빈 표 스타일 요청 처리 — If1 노드 추가, isEmpty 플래그 기반 분기\n\n---\n\n## 미래의 형에게\n\n이 워크플로우는 처음부터 지금 구조로 만들어진 게 아니에요. 시행착오를 거쳐 점진적으로 다듬어진 결과입니다. 특히 다음 두 부분은 **건드리기 전에 반드시 위 설명을 다시 읽어**보세요:\n\n1. **GET 노드 두 개**: 중복처럼 보이지만 의도된 분리. 통합 시 인덱스 깨짐.\n2. **batchUpdate 3단계 분리**: 한 번에 보내면 동작 안 함. 분리 자체가 핵심.\n\n이 두 결정이 흔들리면 워크플로우 전체가 다시 깨질 수 있어요.\n\n새 기능 추가 시에는:\n- 새 문서 유형은 `JSON 파싱` 노드의 분기에 추가\n- 새 데이터 소스는 `데이터 필터링`의 헤더 매핑에 추가\n- 워크플로우 전체 구조는 가능하면 유지\n\n작은 개선보다 안정성 우선. 동작하는 시스템에 대한 존중.",
+        "height": 5424,
+        "width": 1040,
+        "color": 5
+      },
+      "id": "d9598ba0-2521-4c2b-a040-0ab35c9aba1e",
+      "name": "Sticky Note v2 변경이력",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        0,
+        0
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "# 아로마 AI 챗봇 - Google Docs 자동화 메모\n\n> 작성일: 2026-04-19 (v1)\n> 재구성: 2026-04-22 (v2 — AI 2단 구조 + batchUpdate 3단계 분리)\n\n---\n\n## 설계 철학\n\n**하이브리드 접근**: 결정적 로직과 AI 판단을 명확히 분리한다.\n\n- **AI가 해야 할 일**: 자연어 해석, 데이터 기반 인사이트 도출\n- **코드가 해야 할 일**: 데이터 필터링/집계, 문서 구조 생성\n\nAI에 전부 맡기면 속도/비용/일관성이 무너지고, 전부 코드로 짜면 예외 경우의 수가 끝없이 터진다. 입구(파싱)와 출구(리포트 생성)만 AI가 맡고, 중간 데이터 처리는 코드가 맡는 대칭 구조가 가장 견고하다.\n\n---\n\n## 전체 노드 흐름\n\n```\n[Chat Trigger]\n    ↓\n[파싱 AI]                      ← Haiku: 질문 → 쿼리 JSON\n    ↓\n[쿼리 정제]                    ← Code: JSON 파싱 + 문서 메타 생성\n    ↓\n[Sheets API 조회]              ← HTTP: 주문_RAW 시트 전체\n    ↓\n[데이터 필터링]                ← Code: 쿼리 기반 범용 집계\n    ↓\n[리포트 생성 AI]               ← Sonnet: 집계 → 리포트 JSON\n    ↓\n[JSON 파싱]                    ← Code: 리포트 AI 출력 → Docs requests\n    ↓\n[Google Docs 생성]             ← 빈 문서 생성\n    ↓\n[Docs 텍스트+표 삽입]          ← batchUpdate 1: 뼈대 만들기\n    ↓\n[표 구조 확정]                 ← GET 1: 빈 표 위치 파악\n    ↓\n[스타일 요청 생성]             ← Code: 스타일 requests 생성\n    ↓\n[Docs 표 스타일 적용]          ← batchUpdate 2a: 옷 입히기\n    ↓\n[표 내용 확정 준비]            ← GET 2: 최종 위치 재파악\n    ↓\n[셀 내용 요청 생성]            ← Code: 셀 삽입 requests 생성\n    ↓\n[IF]\n    ├─ true  → [문서 URL 반환]\n    └─ false → [Docs 셀 내용 삽입]  ← batchUpdate 2b: 글자 채우기\n                 ↓\n               [문서 URL 반환]\n```\n\n---\n\n## 노드별 상세\n\n### 1. 파싱 AI (AI Agent)\n\n**역할**\n\n사용자의 자연어 질문을 구조화된 쿼리 JSON으로 변환한다. 점주명, 기간, 집계 요구사항을 정확히 파악해 뒤 노드들이 쓸 수 있는 계약서를 만든다.\n\n**왜 필요한가**\n\nv1에서는 Code 노드로 정규식/하드코딩 기반 파싱을 했으나, 질문의 의도를 규칙으로 다 커버하는 게 불가능했다. 질문 차원이 3개(점주 × 기간 × 카테고리)여서 이론상 32가지 경우의 수가 나오는데 5가지 유형 분기로는 27가지가 뭉개졌다. \"최근 3개월간 전체 매장 TOP3 + 상품 많이 팔린 것\"처럼 복합 의도가 있는 질문이 자주 구멍을 냈다.\n\nAI가 파싱을 맡으면 정규식으로 잡을 수 없는 문맥도 이해하고, 새로운 질문 유형이 나와도 프롬프트 수정만으로 대응 가능하다.\n\n**구현 원리**\n\n- Claude Haiku 4.5 사용 (파싱은 단순 변환이라 작은 모델로 충분)\n- Temperature 0 (결정적 출력)\n- User Message에 오늘 날짜 박아서 상대 시간 표현 해석\n- System Message에 데이터 스키마, 점주 목록, 출력 스펙, 판단 규칙 명시\n- Memory 연결 안 함 (매 질문 독립 파싱)\n\n**주의사항**\n\n- 점주 목록은 하드코딩 — API로 못 가져오는 운영 정보라 수동 관리 필수\n- 날짜는 System Message에 넣으면 정적 텍스트로 굳어질 수 있음 → User Message에 `{{ $now.format('yyyy-MM-dd') }}`로 주입\n- Haiku가 가끔 응답을 `` ```json ... ``` `` 코드블록으로 감쌈 → 다음 노드에서 벗겨야 함\n\n---\n\n### 2. 쿼리 정제 (Code)\n\n**역할**\n\n파싱 AI의 문자열 출력을 JSON 객체로 파싱하고, 문서 메타데이터(문서번호, 생성일시)를 추가한다.\n\n**왜 필요한가**\n\nAI Agent의 출력은 문자열이고, 뒤 노드들은 객체를 기대한다. 그 사이 중간 다리가 필요하다. 또한 파싱 결과 자체에는 \"문서번호\"나 \"생성일시\" 같은 **환경 정보**가 없는데, 이건 AI가 할 일이 아니라 코드가 넣는 게 맞다.\n\n**구현 원리**\n\n```javascript\nconst raw = $input.first().json.output;\nconst cleaned = raw.replace(/```json/g, '').replace(/```/g, '').trim();\nconst query = JSON.parse(cleaned);\n\n// 문서 메타 추가\nconst now = new Date();\nconst 문서번호 = `${query.문서코드}-${dateStr}-001`;\n```\n\n- try/catch로 파싱 실패 시 fallback 쿼리 제공\n- 원본 질문도 함께 실어서 다음 노드들이 참조 가능하게\n\n**주의사항**\n\n- Chat Trigger 노드 이름 변경 시 `$('When chat message received')` 참조도 수정 필요\n- 파싱 실패 fallback은 \"빈 결과\"가 아니라 **최소한의 유효한 쿼리 구조**로 줘야 뒤 노드가 깨지지 않음\n\n---\n\n### 3. Sheets API 조회 (HTTP Request)\n\n**역할**\n\nGoogle Sheets의 주문_RAW 시트에서 전체 데이터를 가져온다.\n\n**왜 필요한가**\n\n- n8n Google Sheets 노드는 \"Get Many Rows\"에 구조적 제약이 있음\n- 6천행 이상 대용량 데이터를 한 번에 깨끗하게 가져오려면 Sheets API 직접 호출이 가장 안정적\n- 공개 읽기 + API 키 방식으로 OAuth 오버헤드 없이 빠르게 조회\n\n**구현 원리**\n\n- URL: `https://sheets.googleapis.com/v4/spreadsheets/{ID}/values/주문_RAW!A:L`\n- Query Parameter: `key={API키}`\n- 스프레드시트 공유 설정: \"링크가 있는 모든 사용자 뷰어\"\n\n**주의사항**\n\n- API 키 하드코딩 상태 → Oracle 이전 시 환경변수로 전환 필요\n- 공개 뷰어 설정은 **읽기 전용**이라 안전하지만, 민감한 매출 데이터가 시트에 있다면 권한 재검토 필요\n\n---\n\n### 4. 데이터 필터링 (Code)\n\n**역할**\n\n쿼리 JSON의 `필터` 블록에 따라 행을 필터링하고, `집계` 배열 스펙대로 그룹/정렬/상위N 처리한다. `비교` 블록이 있으면 전월/전년동월 데이터도 추가 집계한다.\n\n**왜 필요한가**\n\nv1에서는 \"유형 5가지\" 하드코딩 분기로 집계했는데, 다음 문제가 터졌다:\n\n- \"상품\" 카테고리 질문에도 점주 데이터만 집계되는 경우\n- \"최근 3개월\" 범위 기간이 제대로 적용 안 되고 시작월만 포함되는 경우\n- 새 유형이 필요하면 코드 수정 필수\n\nv2에서는 **쿼리 JSON 스펙을 받아 범용적으로 처리**하는 엔진으로 바꿨다. 집계 배열에 몇 개가 들어오든, 어떤 그룹 축이든 처리 가능.\n\n**구현 원리**\n\n- 필터 4종: 점주 / 기간시작 / 기간종료 / 상품키워드\n- 집계 수행 함수: 그룹 키 생성 → 합산 → 정렬 → 상위 N\n- 그룹 축 지원: 점주명 / 상품명 / 년월 (복합 그룹도 가능)\n- 측정값: 매출, 수량, 주문수 전부 동시 계산\n- 전체총계는 항상 포함 (비중 계산 시 필요)\n- 비교 집계: 전월 / 전년동월 옵션 처리\n\n**주의사항**\n\n- 주문_RAW 열 구조가 바뀌면 `idx` 객체 수정 필요\n- 상품 표시는 `상품명 + 옵션값` 조합 (옵션값이 향수 종류 구분에 핵심)\n- 결과를 `JSON.stringify`로 문자열화해서 다음 노드에 전달 (AI에 넘기기 위함)\n- 6천행 중 실제 집계 대상은 800행 내외 (필터링 후) — 토큰 낭비 방지의 핵심\n\n---\n\n### 5. 리포트 생성 AI (AI Agent)\n\n**역할**\n\n집계된 데이터를 해석해 정해진 JSON 형식의 리포트를 생성한다. RPT(데이터분석) 또는 INS(인사이트) 두 가지 포맷 중 하나로 출력.\n\n**왜 필요한가**\n\n데이터는 필터/집계됐지만, **사람이 읽을 만한 형태**로 가공하는 건 AI의 영역이다. 단순히 숫자를 나열하는 게 아니라:\n\n- 비중 퍼센트 계산\n- 의미 있는 요약 문장 작성\n- 도메인 지식 기반 보정 (예: \"시향지는 수량 많지만 매출 기여도 낮음\")\n- 표 헤더/컬럼을 맥락에 맞게 선택\n\n이건 규칙 기반으로 짜기가 너무 번거롭다.\n\n**구현 원리**\n\n- Claude Sonnet 4-5 사용 (분석 품질이 중요해 좋은 모델 필요)\n- System Message에 출력 JSON 스키마 엄격히 명시\n- 도메인 지식 주입: 향료 = 원재료, 공병/펌프 = 부자재, 시향지 = 소모품\n- Simple Memory 연결 (대화 맥락 유지, Context Window 10)\n- 동적 구조 지원: `상세데이터`, `상세데이터2`, `상세데이터3`... 집계 개수만큼\n\n**주의사항**\n\n- 토큰 속도 제한 (30,000 tokens/min) — 연속 테스트 시 대기 필요\n- 가끔 코드블록으로 감싸서 출력 → 다음 노드에서 벗기는 로직 필수\n- \"매출 기준 정렬\"이 기본이지만, 쿼리가 \"수량 기준\"으로 오면 그대로 따름 (→ 남은 과제)\n\n---\n\n### 6. JSON 파싱 (Code)\n\n**역할**\n\n리포트 AI의 출력을 파싱하고, Google Docs API가 요구하는 `batchUpdate` requests 배열로 변환한다. 문서의 텍스트 뼈대(헤더, 섹션, 빈 표 구조)를 설계한다.\n\n**왜 필요한가**\n\nDocs API는 데이터를 평범하게 받지 않는다. 모든 작업이 \"어느 index에 뭘 삽입하라\" 방식의 명령어로 들어가야 한다. 리포트 AI의 논리적 구조(요약/상세/합계)를 Docs API 명령어로 번역하는 중간 다리가 필요하다.\n\n**구현 원리**\n\n- `endOfSegmentLocation: { segmentId: '' }` 방식으로 \"문서 끝에 순서대로\" 삽입\n  - index 계산 없이 간편하지만 이후 index 추적 어려움\n- HEADING_4 스타일은 `updateParagraphStyle`로 별도 적용 (startIndex 계산 필요)\n- 표는 `insertTable`로 빈 구조만 생성 (셀 내용은 별도 노드)\n- 동적 표 처리: `Object.keys(parsed).filter(k => k.startsWith('상세데이터'))`로 상세데이터1/2/3... 자동 수집\n\n**주의사항**\n\n- 표 삽입 이후로는 index 추적 불가 (표 크기 계산이 복잡해 포기)\n- `currentIndex` 기반 스타일 적용은 표 **앞쪽까지만** 유효\n- AROMAFOREST 폰트 크기 = endIndex 13 (문자 12개 + \\n)\n- `━` 구분선 같은 유니코드는 UTF-16 기준 2바이트지만 JS length는 1 반환 → 계산 주의\n\n---\n\n### 7. Google Docs 생성\n\n**역할**\n\nn8n Google Docs 노드로 빈 문서를 생성한다.\n\n**왜 필요한가**\n\nbatchUpdate는 기존 문서에만 가능하니, 일단 빈 문서가 필요하다. 문서 ID를 받아야 이후 모든 노드가 참조할 수 있다.\n\n**구현 원리**\n\n- Operation: Create\n- 제목: `{{ $json.문서번호 }}`\n- Drive: My Drive 루트\n\n**주의사항**\n\n- Google Docs API가 Google Cloud 프로젝트에서 활성화되어 있어야 함\n- OAuth Credential 필요 (Sheets 계정 재사용 가능)\n\n---\n\n### 8. Docs 텍스트+표 삽입 (batchUpdate 1)\n\n**역할**\n\nJSON 파싱 노드가 만든 requests 배열을 실제 문서에 적용한다. 텍스트/섹션 헤더/빈 표 구조를 한꺼번에 삽입.\n\n**왜 필요한가**\n\nbatchUpdate 1은 **문서의 뼈대를 만드는 단계**다. 이후 모든 스타일/내용 작업이 이 뼈대를 기준으로 계산되므로, 여기서 구조가 확정돼야 한다.\n\n**구현 원리**\n\n- Method: POST\n- URL: `https://docs.googleapis.com/v1/documents/{docId}:batchUpdate`\n- Body: Raw (Content-Type: application/json)\n- Body 값: `{{ $('JSON 파싱').first().json.fullBody }}`\n\n**주의사항**\n\n- Body Content Type을 반드시 Raw로 설정\n- `{{ $json.fullBody }}` 참조가 안 될 수 있어 노드 이름 명시 필수\n\n---\n\n### 9. 표 구조 확정 (GET 1)\n\n**역할**\n\nbatchUpdate 1 실행 후 문서의 실제 구조를 읽어온다. 빈 표의 startIndex/endIndex, 셀 위치 등을 확정한다.\n\n**왜 필요한가**\n\nbatchUpdate 1로 표가 만들어졌지만, 우리는 **실제 몇 번째 index에 표가 들어갔는지 예측할 수 없다**. 유니코드 문자, 개행, 내부 구조 등이 변수라 계산 불가능하다. 실제 결과물을 읽어서 확인하는 수밖에 없다.\n\n**구현 원리**\n\n- GET `https://docs.googleapis.com/v1/documents/{docId}`\n- 응답의 `body.content` 안에 `table` 타입 요소가 표들\n- 각 셀의 `startIndex`, `endIndex`가 실제 위치\n\n**주의사항**\n\n- batchUpdate 1이 **완전히 완료된 후** 실행되어야 함 (n8n은 자동 순차 실행이라 문제 없음)\n- 이 시점의 index는 **스타일 적용 기준**으로만 유효 (셀 내용 삽입 전까지)\n\n---\n\n### 10. 스타일 요청 생성 (Code)\n\n**역할**\n\nGET 1에서 읽은 표 위치를 기반으로 **스타일 요청**(컬럼 너비, 헤더 배경색)을 생성한다.\n\n**왜 필요한가**\n\n**v2에서 새로 추가된 노드.** v1에서는 스타일 요청과 셀 내용 요청을 같은 batchUpdate에 몰아넣었는데, 셀 삽입으로 index가 밀리면서 뒤에 오는 스타일 요청의 `tableStartLocation`이 깨지는 에러가 반복됐다. 스타일만 먼저 처리하는 별도 단계가 필요해졌다.\n\n**구현 원리**\n\n- 동적 표 수집: `Object.keys(parsed).filter(k => k.startsWith('상세데이터'))`\n- 역순 처리: `tables.reverse()` — 뒤 표부터 적용해야 앞 표의 index 영향 없음\n- 컬럼 너비: \n  - 2열 → [150, 301] (키:값 구조, 1:2 비율)\n  - 4열 이상 → 균등 분배 (총 451pt 기준)\n- 헤더 배경색: rgb(0.937, 0.937, 0.937) 옅은 회색\n\n**주의사항**\n\n- 스타일 적용은 index를 변경하지 않음 (문자 수 불변)\n- 하지만 하나의 batchUpdate 안에서 여러 표를 순차 처리할 때는 여전히 **역순**이 안전\n\n---\n\n### 11. Docs 표 스타일 적용 (batchUpdate 2a)\n\n**역할**\n\n스타일 요청 생성 노드가 만든 requests를 실제로 적용한다.\n\n**왜 필요한가**\n\n**v2에서 batchUpdate를 3단계로 분리하면서 추가된 중간 단계.** 스타일과 내용을 물리적으로 다른 batchUpdate로 분리해야 index 꼬임이 근본적으로 해결된다.\n\n**구현 원리**\n\n- Docs 텍스트+표 삽입 노드와 설정 거의 동일\n- URL, Headers, Body 형식 모두 동일\n- Body 값만 `스타일 요청 생성` 노드 참조\n\n**주의사항**\n\n- 이 단계가 실패해도 문서 자체는 유효 (빈 표 그대로)\n- 빈 요청일 때를 대비한 예외처리 필요 (스타일 요청 생성 노드에서 isEmpty 체크)\n\n---\n\n### 12. 표 내용 확정 준비 (GET 2)\n\n**역할**\n\n스타일 적용 후 문서의 최종 구조를 다시 읽어온다. 셀 내용 삽입에 쓸 정확한 index를 재획득.\n\n**왜 필요한가**\n\n**v2에서 새로 추가.** 이론상 스타일 적용은 index를 바꾸지 않지만, 실제 테스트에서 여러 표 처리 시 미세한 위치 변동이 있었다. 안전을 위해 최신 상태를 다시 확인.\n\n이 재읽기 단계가 없으면 **같은 batchUpdate 안에서 여러 작업을 섞는 것과 본질적으로 같아**져서 에러가 재발한다.\n\n**구현 원리**\n\n- GET 1과 동일한 요청\n- 단, 이 시점은 스타일이 이미 반영된 상태\n\n**주의사항**\n\n- \"두 번 읽는 게 낭비 아닌가?\" 싶지만, Docs API는 빠르고 안정성이 훨씬 중요\n- 이 노드가 반환하는 구조가 셀 내용 삽입의 **유일한 신뢰 가능한 참조점**\n\n---\n\n### 13. 셀 내용 요청 생성 (Code)\n\n**역할**\n\nGET 2의 최신 표 위치를 기반으로 각 셀에 들어갈 내용을 계산해 insertText requests로 만든다.\n\n**왜 필요한가**\n\n빈 표에 내용을 채우려면 **각 셀의 정확한 index**를 알아야 한다. 이 index는 표 위치 + 행/열 번호로 공식 계산이 가능하다.\n\n**구현 원리**\n\n셀 index 계산 공식:\n```\ncellIndex = tableStartIndex + 3 + r * (numCols * 2 + 1) + c * 2\n```\n\n- `tableStartIndex`: 표가 시작되는 문서 index\n- `3`: 표 시작 후 첫 셀까지의 오프셋\n- 행 간격: `numCols * 2 + 1` (각 셀 2칸 + 행 끝 1칸)\n- 열 간격: `2` (셀 내용 + 구분자)\n\n**통합 역순 삽입**:\n\n- 여러 표의 모든 셀을 **하나의 배열에 수집**\n- index 내림차순으로 정렬\n- 뒤쪽부터 삽입하면 앞쪽 index는 영향 받지 않음\n\n**주의사항**\n\n- 각 표마다 따로 역순 처리하면 표 간 index 꼬임 발생 (v2 초기 시도 실패 원인)\n- 반드시 **전체 통합 후 한 번에 역순 정렬**\n- 빈 문자열 셀은 skip (단순 최적화)\n\n---\n\n### 14. IF (isEmpty 체크)\n\n**역할**\n\n셀 내용이 비어있으면 batchUpdate 2b를 스킵하고 바로 문서 URL 반환으로 넘어간다.\n\n**왜 필요한가**\n\nINS(인사이트) 형식 리포트는 표가 없어서 상세데이터가 비어있다. 빈 requests 배열로 batchUpdate를 호출하면 \"Must specify at least one request\" 에러가 터진다.\n\n**구현 원리**\n\n- Condition: `{{ $json.isEmpty }} is true`\n- true → 문서 URL 반환 (표 없는 문서로 완성)\n- false → Docs 셀 내용 삽입 → 문서 URL 반환\n\n**주의사항**\n\n- 셀 내용 요청 생성 노드가 `isEmpty` 플래그를 정확히 세팅해야 함\n- 표가 있지만 데이터가 적은 경우도 대비 (행 수 검증)\n\n---\n\n### 15. Docs 셀 내용 삽입 (batchUpdate 2b)\n\n**역할**\n\n셀 내용 요청 생성 노드가 만든 requests를 실제 문서에 적용한다.\n\n**왜 필요한가**\n\n**v2에서 역할이 축소됨.** v1에서는 스타일과 내용을 모두 처리했지만, v2에서는 **셀 내용만** 담당한다.\n\n**구현 원리**\n\n- Docs 텍스트+표 삽입과 설정 동일\n- Body 값: `{{ $json.fullBody }}` (셀 내용 요청 생성 출력)\n\n**주의사항**\n\n- v2 초기 시도에서 이 단계의 에러가 전체 파이프라인을 깨뜨렸음\n- 3단계 분리로 해결됐지만, **같은 batchUpdate에 다른 작업 섞으면 재발 가능**\n\n---\n\n### 16. 문서 URL 반환 (Code)\n\n**역할**\n\n생성된 Google Docs 링크를 사용자에게 반환한다.\n\n**구현**\n\n```javascript\nconst docId = $('Google Docs 생성').first().json.id;\nconst docUrl = `https://docs.google.com/document/d/${docId}`;\nreturn [{ json: { output: `분석 완료! 문서 링크: ${docUrl}` } }];\n```\n\n---\n\n## 쿼리 JSON 스펙 (파싱 AI ↔ 데이터 필터링 간 계약서)\n\n이 스펙이 흔들리면 양쪽 노드 다 깨진다. 변경 시 반드시 양쪽 동시 수정.\n\n```json\n{\n  \"문서코드\": \"RPT\" | \"INS\",\n  \"카테고리\": \"매출\" | \"상품\" | \"점주\" | \"재고\",\n  \"필터\": {\n    \"점주\": [\"A점\"] | null,\n    \"기간시작\": \"2026-02\" | null,\n    \"기간종료\": \"2026-04\" | null,\n    \"상품키워드\": [\"향료\"] | null\n  },\n  \"집계\": [\n    {\n      \"이름\": \"매장별 매출 TOP3\",\n      \"그룹\": [\"점주명\" | \"상품명\" | \"년월\"],\n      \"측정\": \"매출합계\" | \"수량합계\" | \"주문수\",\n      \"정렬\": \"매출내림차순\" | \"수량내림차순\" | \"년월오름차순\" | null,\n      \"상위N\": 숫자 | null\n    }\n  ],\n  \"비교\": {\n    \"전월대비\": boolean,\n    \"전년동월대비\": boolean\n  }\n}\n```\n\n---\n\n## 리포트 JSON 스펙 (리포트 AI ↔ JSON 파싱 간 계약서)\n\n**RPT (데이터분석) 형식**\n\n```json\n{\n  \"문서코드\": \"RPT\",\n  \"카테고리\": \"매출\" | \"상품\" | \"점주\" | \"재고\",\n  \"요약\": [\n    { \"키\": \"분석 기간\", \"값\": \"...\" },\n    { \"키\": \"총 매출\", \"값\": \"...\" }\n  ],\n  \"상세데이터\": {\n    \"제목\": \"매장별 매출 TOP3\",\n    \"컬럼\": [\"순위\", \"점포명\", \"매출\", \"비중\"],\n    \"행들\": [ [\"1위\", \"A점\", \"3,450,000원\", \"28.3%\"], ... ]\n  },\n  \"상세데이터2\": { ... },\n  \"상세데이터3\": { ... },\n  \"합계\": \"한 줄 요약\"\n}\n```\n\n**INS (인사이트) 형식**\n\n```json\n{\n  \"문서코드\": \"INS\",\n  \"카테고리\": \"...\",\n  \"핵심요약\": \"한 줄 메시지\",\n  \"분석근거\": [\"근거1\", \"근거2\"],\n  \"참고사항\": [\"액션1\", \"액션2\"]\n}\n```\n\n---\n\n## 변경 이력 (v1 → v2)\n\n### 전환의 동기\n\nv1은 정규식 파싱 + 5유형 분기 기반이었다. 겉으로는 동작했지만 실사용에서 구멍이 계속 드러났다:\n\n- \"최근 3개월\" 범위 필터가 시작월만 반영됨 → 2월 데이터만 나오는 사건\n- \"상품\" 카테고리 질문에 점주 데이터만 집계됨\n- 새로운 질문 유형이 나올 때마다 코드 수정 필요\n\n**근본 문제**: 질문 차원(점주 × 기간 × 카테고리)이 3차원인데 5가지 유형으로 뭉뚱그렸음. 이론상 32가지 경우 중 27가지가 근사치로 뭉개지고 있었다.\n\n### 주요 변경\n\n**변경 1: 파싱 AI 도입**\n\n- 기존: Code 노드에서 정규식/하드코딩\n- 변경: Haiku 기반 AI Agent가 쿼리 JSON 생성\n- 왜: 질문 유형을 규칙으로 다 커버 불가능. AI가 의도 파악하는 게 훨씬 유연\n- 효과: 새 질문 패턴 대응이 프롬프트 수정만으로 가능\n\n**변경 2: 범용 집계 엔진으로 리팩터링**\n\n- 기존: 데이터 필터링 노드가 5가지 유형별로 분기 처리\n- 변경: 쿼리 JSON의 `집계` 배열을 순회하며 범용 처리\n- 왜: 유형 분기는 확장성이 0. 집계 배열 방식은 배열에 추가만 하면 됨\n- 효과: 한 질문에 여러 집계 동시 처리 가능 (점주 TOP + 상품 TOP 같이)\n\n**변경 3: batchUpdate를 3단계로 분리**\n\n이게 가장 고통스러운 변경이었다.\n\n- 기존: batchUpdate 2번 (텍스트+표 / 셀+스타일)\n- 변경: batchUpdate 3번 (텍스트+표 / 스타일만 / 셀만)\n- 왜: \"같은 batchUpdate에 index 변동 작업과 절대 위치 참조 작업을 섞으면 깨진다\"는 원칙 발견\n\n### 트러블슈팅 기록 (v2 전환 중)\n\n| 에러 | 원인 | 해결 |\n|---|---|---|\n| `상세데이터2`가 문서에 안 나옴 | JSON 파싱 노드가 하드코딩된 키만 참조 | `Object.keys(parsed).filter(k => k.startsWith('상세데이터'))`로 동적 수집 |\n| `requests[17] insertText` 에러 | 각 표마다 따로 역순 처리 → 표 간 index 충돌 | 모든 표의 셀을 통합 배열에 모아 한 번에 역순 정렬 |\n| `requests[60] updateTableCellStyle` 에러 | 셀 삽입 후 index가 밀려 스타일 요청의 tableStartLocation 무효화 | batchUpdate를 스타일/내용 2개로 분리 |\n| 스타일 batchUpdate 분리 후에도 index 오류 | 스타일 적용이 미세하게 index에 영향 주는 경우 존재 | 스타일 적용 후 두 번째 GET으로 최신 index 재획득 |\n\n### 네이밍 정비\n\n- `Docs 문서 읽기 1/2` → `표 구조 확정` / `표 내용 확정 준비`\n- 이유: \"읽기\"는 수단이고, 본질은 \"다음 단계를 위해 구조/위치를 확정하는 것\"\n- 다른 노드들의 네이밍 원칙(`Docs 텍스트+표 삽입`, `Docs 표 스타일 적용`)과 일관성 유지\n\n### 핵심 교훈\n\n**\"한 batchUpdate 안에서 index 변동 작업과 절대 위치 참조 작업을 섞지 말 것.\"**\n\n이 원칙이 Docs API 작업의 근본이다. 앞으로 표 관련 새 기능 추가할 때도 이 원칙부터 지켜야 한다:\n\n- 새 스타일 추가 → `Docs 표 스타일 적용` 단계에 얹기\n- 새 내용 삽입 → `Docs 셀 내용 삽입` 단계에 얹기\n- 새 타입 작업 필요하면 → 또 별도 batchUpdate 단계 만들기\n\n---\n\n## 문서 양식\n\n실제 생성되는 Google Docs 레이아웃:\n\n```\nAROMAFOREST (20pt)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n문서번호: RPT-YYYYMMDD-001\n생성일시: YYYY-MM-DD HH:MM\n문서유형: 데이터분석 | 카테고리: 매출\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n01. 요약 (Heading 4, 회색)\n  키: 값\n  ...\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n02. 상세 데이터 (Heading 4, 회색)\n  표 제목\n  [표: 헤더 회색 배경, 컬럼 너비 최적화]\n  \n  표 제목 2  (동적 추가)\n  [표 2: ...]\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n합계 한 줄 요약\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n생성: 아로마포레스트 AI 분석 시스템\n```\n\n**디자인 레퍼런스**:\n- 아임웹 주문서 (업무 익숙함): 상단 브랜드, 구조적 레이아웃\n- NICE 기업분석 보고서 (권위감): `01. 요약` 번호 섹션, 회색 톤 헤더\n\n**디자인 결정 요약**:\n- `━` 구분선 (진짜 border 대신): API 편의성 + 시각적 효과\n- HEADING_4 + rgb(0.4) 회색: NICE 보고서보다 더 옅은 톤\n- 표 헤더 rgb(0.937): 거의 배경색에 가까운 강조 없는 구분\n- AROMAFOREST 20pt 단독: 브랜드 마스트헤드\n\n---\n\n## 남은 과제\n\n### 품질 개선 (가까운 시일)\n\n**1. \"많이 팔린\" 같은 애매한 표현 처리**\n\n- 현상: 파싱 AI가 \"많이 팔린\"을 수량 기준으로 해석 → 시향지(수량 1위) 강조됨\n- 실제 의미: 보통 \"매출 기여 큰 상품\" 을 뜻함\n- 해결 방향: 애매하면 **수량 TOP10 + 매출 TOP10 둘 다 집계**하게 System Message 규칙 추가\n\n**2. 카테고리 판단 일관성**\n\n- 현상: 같은 질문도 카테고리가 때로 \"상품\", 때로 \"매출\"로 분류됨\n- 해결 방향: 우선순위 규칙 강화 (상품 키워드 언급 > 매출 기본값)\n\n**3. Bold 헤더 재도입**\n\n- 현상: v2 전환 중 헤더 Bold 스타일은 임시 제거 (셀 삽입 후 range 계산 복잡)\n- 해결 방향: 셀 내용 삽입 후 **또 한 번 GET**으로 새 range 구해서 bold 적용, 또는 스타일 적용 단계에서 **빈 셀 상태로도 range 계산 가능한 방식** 찾기\n\n**4. 카테고리별 전용 프롬프트**\n\n- 현상: 리포트 AI가 모든 카테고리(매출/상품/점주/재고)를 같은 프롬프트로 처리\n- 해결 방향: 카테고리별 강조점 다르게 (\"상품\"이면 매출 기여도 vs 빈도 비교 필수 등)\n\n### 확장 기능 (중기)\n\n**5. 재고 카테고리 실제 지원**\n\n- 현상: 현재 \"재고는 상품_적재 시트 참조\" 메시지만 반환\n- 해결 방향: Sheets API 조회를 재고 시트로 분기하는 노드 추가\n\n**6. 전월/전년 비교 실제 렌더링**\n\n- 현상: 쿼리 JSON 스펙에는 있지만 실제 표로 렌더링하는 부분은 미완성\n- 해결 방향: 비교 데이터가 있으면 `상세데이터N`에 추가하는 리포트 AI 규칙 명시\n\n**7. 인사이트 섹션 Heading 스타일**\n\n- 현상: 표 이후 섹션은 index 추적 어려워 스타일 미적용\n- 해결 방향: 셀 내용 삽입 완료 후 **또 GET**으로 최신 구조 받아서 인사이트 섹션에 스타일 적용하는 4단계 추가\n\n### 인프라 (중장기)\n\n**8. Oracle Cloud VM 이전**\n\n- n8n Docker 컨테이너화\n- 24시간 운영 확보 (현재 로컬 Mac 의존)\n- 아임웹 v3 API 마이그레이션 (OAuth 2.0 + Webhook)\n- 카카오 챗봇 연동 활성화\n- API 키 환경변수 전환\n\n**9. 문서 Drive 폴더 자동 분류**\n\n- 현재: My Drive 루트에 생성\n- 목표: 카테고리/날짜별 폴더 자동 분류 (예: `/2026/04/매출/RPT-20260422-001`)\n\n**10. 카카오 메시지로 문서 링크 발송**\n\n- 생성된 Docs URL을 카카오로 자동 전송 (아침 보고용 워크플로우)\n\n---\n\n## 부록: 네이밍 원칙\n\nv2 전환 중 정립된 원칙. 이후 노드 추가 시 준수:\n\n- **`Docs [대상] [동작]`**: Docs API 호출 노드 (예: `Docs 텍스트+표 삽입`, `Docs 표 스타일 적용`)\n- **`[대상] [동작]`**: 데이터 준비 Code 노드 (예: `스타일 요청 생성`, `셀 내용 요청 생성`)\n- **`[결과] 확정/준비`**: 상태 조회 GET 노드 (예: `표 구조 확정`, `표 내용 확정 준비`)\n- **`[역할] AI`**: AI Agent 노드 (예: `파싱 AI`, `리포트 생성 AI`)\n\n목적: 노드 이름만 보고도 **역할 타입**과 **처리 대상**이 한눈에 들어오게.",
+        "height": 7008,
+        "width": 720
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1888,
+        0
+      ],
+      "id": "9f656277-9500-4f8c-ad90-3b6c52177aa7",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "# 아로마 AI 챗봇 트러블슈팅 기록\n> 작성일: 2026-04-17\n\n---\n\n## 1. 토큰 초과 오류 (1,070,688 tokens > 1,000,000)\n\n**원인**\nGoogle Sheets Tool로 주문_RAW 6천행 전체를 Claude한테 통째로 넘김\n\n**해결**\n- 1차: Google Sheets Tool Sheet를 `주문_RAW` → `대시보드` 로 변경 (임시)\n- 2차 (근본 해결): HTTP Request 노드로 Sheets API 직접 호출 후 Code 노드에서 JS로 집계\n  - 6천행을 점주별/월별/상품별 집계 테이블로 변환\n  - 상품별 Top 10만 추출\n  - Claude한테는 집계 결과만 전달\n\n**교훈**\nRaw 데이터를 AI한테 통째로 넘기지 말 것. 반드시 집계 후 전달.\n\n---\n\n## 2. 카카오 발송 Bad Request (-2 오류)\n\n**원인 1 - 마크다운 특수문자**\nAI 답변에 `**`, `##`, `|`, `---` 등 마크다운 포함 시 카카오 API 파싱 실패\n\n**해결**\nSystem Message에 마크다운 금지 명시\n```\n마크다운 문법(**, ##, |, ---)을 절대 사용하지 마세요.\n이모지를 사용하지 마세요.\n```\n\n**원인 2 - 줄바꿈 문자 (\\n)**\nAI 답변의 줄바꿈이 카카오 파싱 오류 유발\n\n**해결**\n카카오 발송 전 Code 노드에서 텍스트 정리\n```javascript\nconst clean = output\n  .replace(/\\n/g, ' ')\n  .replace(/\\r/g, ' ')\n  .replace(/\"/g, \"'\")\n  .replace(/\\s+/g, ' ')\n  .trim();\n\nconst template = JSON.stringify({\n  object_type: \"text\",\n  text: clean,\n  link: { web_url: \"https://aromaforest.shop\" }\n});\n```\n\n**원인 3 - template_object 형식 오류**\nBody Content Type이 JSON이면 안 됨. Form Urlencoded 사용해야 함.\n\n**해결**\n카카오 발송 노드 Body Content Type → `Form Urlencoded`\n\n---\n\n## 3. fetch / axios / $http 미지원 오류\n\n**원인**\nn8n Code 노드에서 외부 API 호출 시 fetch, axios, $http 모두 미지원\n\n**해결**\nCode 노드에서 API 호출 포기 → **HTTP Request 노드**를 별도로 추가해서 처리\n\n```\nCode 노드 (질문 파싱)\n    ↓\nHTTP Request 노드 (Sheets API 호출)\n    ↓\nCode 노드 (데이터 필터링/집계)\n```\n\n---\n\n## 4. Google Sheets Tool 토큰 속도 제한 (30,000 tokens/min)\n\n**원인**\n연속 테스트 시 1분당 30,000 토큰 제한 초과\n\n**해결**\n- 즉시: 3~5분 대기 후 재시도\n- 근본: 데이터 집계 후 소량만 전달하는 구조로 변경\n\n---\n\n## 5. Google Docs 내용 삽입 문제\n\n**원인**\nGoogle Docs 노드 Create Operation에 Content 필드 없음\n\n**해결**\n노드 2개로 분리\n1. `Create` 노드: 빈 문서 생성\n2. `Update` 노드: 내용 삽입\n   - Doc ID: `{{ $('Google Docs 생성').first().json.id }}`\n   - Insert Segment: `Body`\n   - Insert Location: `At End of Specific Position`\n\n---\n\n## 6. Publish 버튼 비활성화\n\n**원인**\n에러 상태 노드가 있으면 Publish 불가\n\n**해결**\n페이지 새로고침 (`Cmd+R`) 후 재시도\n\n---\n\n## 현재 워크플로우 최종 구조\n\n```\nWhen chat message received ─┐\n                            ├─→ 질문 파싱 (Code)\nWebhook ────────────────────┘       ↓\n                              Sheets API 조회 (HTTP Request)\n                                    ↓\n                              데이터 필터링/집계 (Code)\n                                    ↓\n                              AI Agent (Claude)\n                                    ↓\n                              Google Docs 생성\n                                    ↓\n                              Google Docs 내용 삽입\n                                    ↓\n                              문서 URL 반환 (Code)\n\n[카카오 관련 노드 - Oracle 이전 후 활성화]\nRespond to Webhook\nCall '카카오 액세스 토큰 갱신 (서브)'\n카카오 텍스트 정리 (Code)\n카카오 발송\n```\n\n---\n\n## 남은 과제\n\n```\n1. 토큰 속도 제한 → 유료 플랜 업그레이드 or 요청 간격 조절\n2. 카카오 질문 기능 → Oracle Cloud 이전 후\n3. 웹 UI → Oracle Cloud 이전 후\n4. System Message 고도화 → 천천히\n```",
+        "height": 3312,
+        "width": 784
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1072,
+        0
+      ],
+      "id": "7bf8735c-0fd3-4817-a710-b0ae7af3260d",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "ad907bb8-be0e-4f7a-bf55-f589aeef1ffb",
+              "leftValue": "={{ $json.isEmpty }}",
+              "rightValue": "is true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        5408,
+        96
+      ],
+      "id": "8acdf0d9-132b-47a3-a987-2ea5f00853f3",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=질문: {{ $json.question }}\n\n쿼리 정보:\n- 문서코드: {{ $json.문서코드 }}\n- 카테고리: {{ $json.카테고리 }}\n- 기간: {{ $json.필터.기간시작 }} ~ {{ $json.필터.기간종료 }}\n- 점주 필터: {{ $json.필터.점주 }}\n\n집계된 데이터:\n{{ $json.data }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "당신은 아로마포레스트 물류 데이터 분석 어시스턴트입니다.\n사용자의 질문과 함께 \"이미 필터링 및 집계된 데이터\"가 JSON으로 제공됩니다.\n당신의 역할은 이 집계 데이터를 해석하여 정해진 JSON 형식의 리포트를 생성하는 것입니다.\n\n반드시 아래 JSON 형식으로만 답변하세요. 다른 텍스트는 절대 포함하지 마세요.\n코드 블록(```), \"json\" 라벨 등도 붙이지 마세요. 첫 문자는 { 여야 합니다.\n\n## 입력 데이터 구조\n\n입력 데이터의 \"집계된 데이터\" 부분은 다음 구조입니다:\n{\n  \"기간\": \"YYYY-MM ~ YYYY-MM\",\n  \"점주필터\": [\"점주이름\"] 또는 \"전체\",\n  \"필터링행수\": 숫자,\n  \"<집계이름1>\": {\n    \"<그룹키>\": { \"매출\": 숫자, \"수량\": 숫자, \"주문수\": 숫자 }\n  },\n  \"<집계이름2>\": { ... },\n  \"전체총계\": { \"매출\": 숫자, \"수량\": 숫자, \"주문수\": 숫자 },\n  \"비교_전월\": { \"기간\": \"YYYY-MM\", \"매출\": 숫자, ... },    (선택적)\n  \"비교_전년동월\": { \"기간\": \"YYYY-MM\", \"매출\": 숫자, ... } (선택적)\n}\n\n## 문서코드가 \"RPT\"인 경우 출력 형식\n\n{\n  \"문서코드\": \"RPT\",\n  \"카테고리\": \"매출\" | \"상품\" | \"점주\" | \"재고\",\n  \"요약\": [\n    { \"키\": \"분석 기간\", \"값\": \"기간 문자열\" },\n    { \"키\": \"총 매출\", \"값\": \"X,XXX,XXX원\" },\n    { \"키\": \"총 주문수\", \"값\": \"XXX건\" },\n    (필요시 추가 요약 항목)\n  ],\n  \"상세데이터\": {\n    \"제목\": \"첫 번째 집계 이름\",\n    \"컬럼\": [\"컬럼1\", \"컬럼2\", \"컬럼3\", \"컬럼4\"],\n    \"행들\": [[\"값1\", \"값2\", \"값3\", \"값4\"], ...]\n  },\n  \"상세데이터2\": {       (집계가 2개 이상일 때만)\n    \"제목\": \"두 번째 집계 이름\",\n    \"컬럼\": [...],\n    \"행들\": [...]\n  },\n  \"상세데이터3\": {       (집계가 3개 이상일 때만)\n    ...\n  },\n  \"합계\": \"총 매출: X,XXX,XXX원 | 추가 요약\"\n}\n\n## 문서코드가 \"INS\"인 경우 출력 형식\n\n{\n  \"문서코드\": \"INS\",\n  \"카테고리\": \"매출\" | \"상품\" | \"점주\" | \"재고\",\n  \"핵심요약\": \"한 줄 인사이트 메시지\",\n  \"분석근거\": [\"근거1\", \"근거2\", \"근거3\"],\n  \"참고사항\": [\"액션1\", \"액션2\"]\n}\n\n## 상세데이터 테이블 작성 규칙\n\n각 집계 데이터를 표로 변환할 때:\n\n1. 집계 이름은 \"제목\"에 그대로 사용\n2. 컬럼 구성 규칙:\n   - 그룹이 \"점주명\"인 집계 → [\"순위\", \"점포명\", \"매출\", \"비중\"]\n   - 그룹이 \"상품명\"인 집계 → [\"순위\", \"상품명\", \"수량\", \"매출\"]\n   - 그룹이 \"년월\"인 집계 → [\"년월\", \"매출\", \"주문수\"]\n3. \"비중\"은 전체총계 대비 퍼센트 (소수점 1자리)\n4. \"순위\"는 1부터 시작\n5. 금액은 \"X,XXX,XXX원\" 형식\n6. 수량은 \"XXX개\" 형식\n\n## 작성 규칙\n\n1. 숫자는 반드시 한국 원화 형식 (3,208,000원)\n2. 비중은 전체총계 기준으로 계산 (소수점 1자리, 예: 28.3%)\n3. \"요약\" 블록에는 필수적으로:\n   - 분석 기간\n   - 총 매출\n   - 총 주문수\n   포함. 추가로 질문 맥락에 맞는 항목 더 넣을 수 있음.\n4. \"합계\" 블록은 한 줄로 핵심 수치 요약\n5. 비교_전월 또는 비교_전년동월 데이터가 있으면, \"요약\" 블록에 증감률 포함\n   (예: \"전월 대비 성장률: +15.3% (▲1,234,000원)\")\n6. 질문에 \"왜\"/\"어떻게\"/\"추천\" 등의 맥락이 없으면 RPT로 작성\n\n## 아로마포레스트 도메인 지식 (분석 시 고려)\n\n- 향료는 핵심 원재료로, 공병/펌프/뚜껑 등 부자재 수요와 연동됨\n- 시향지는 소모품으로 수량은 많지만 매출 기여도는 낮음\n- 리필병 MP-코드는 향료를 담는 용기 (향료와 세트로 팔림)\n- SMBo-코드는 공병/펌프 등 부자재 식별자\n- 상품 분석 시 매출 기여도 관점과 판매 빈도 관점을 구분해서 해석\n\n## 예시 출력 (RPT, 점주별 + 상품별 집계)\n\n{\n  \"문서코드\": \"RPT\",\n  \"카테고리\": \"매출\",\n  \"요약\": [\n    { \"키\": \"분석 기간\", \"값\": \"2026-02 ~ 2026-04 (3개월)\" },\n    { \"키\": \"총 매출\", \"값\": \"12,800,000원\" },\n    { \"키\": \"총 주문수\", \"값\": \"789건\" }\n  ],\n  \"상세데이터\": {\n    \"제목\": \"매장별 매출 TOP3\",\n    \"컬럼\": [\"순위\", \"점포명\", \"매출\", \"비중\"],\n    \"행들\": [\n      [\"1위\", \"A점\", \"3,450,000원\", \"28.3%\"],\n      [\"2위\", \"가맹점 M\", \"2,610,000원\", \"20.9%\"],\n      [\"3위\", \"K점\", \"1,870,000원\", \"14.3%\"]\n    ]\n  },\n  \"상세데이터2\": {\n    \"제목\": \"전체 상품 판매 TOP10\",\n    \"컬럼\": [\"순위\", \"상품명\", \"수량\", \"매출\"],\n    \"행들\": [\n      [\"1위\", \"시향지 (100/set)\", \"212개\", \"94,000원\"],\n      [\"2위\", \"[H-001] 에르메스 - 운 자르뎅 수르 닐\", \"67개\", \"780,000원\"]\n    ]\n  },\n  \"합계\": \"총 매출: 12,800,000원 | 789건 주문 | TOP3 매장이 전체의 63.5% 차지\"\n}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        3936,
+        96
+      ],
+      "id": "5cc4c078-3344-4adc-b91d-c03b4840c0b4",
+      "name": "Report"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=오늘 날짜: {{ $now.format('yyyy-MM-dd') }}\n\n질문: {{ $json.chatInput }}",
+        "options": {
+          "systemMessage": "⚠️ 중요: 출력은 { 로 시작해서 } 로 끝나야 합니다. \n그 앞뒤에 어떤 문자도 올 수 없습니다.\n코드 블록(```), \"json\" 라벨, 공백, 줄바꿈 모두 금지.\n\n당신은 아로마포레스트 주문 데이터 분석 시스템의 질문 파서입니다.\n사용자의 자연어 질문을 구조화된 쿼리 JSON으로 변환합니다.\n\n## 분석 가능한 데이터\n\n시트명: 주문_RAW\n열 구조: 적재일시, 주문번호, 주문일시, 점주명, 상품명, 옵션명, 옵션값, 수량, 단가, 배송비, 완료여부, 주문상태\n기간 범위: 2024-11 ~ 현재\n행 수: 약 6,000행\n\n## 점주 목록 (정확한 이름으로만 매칭)\n\nA점, B점, C점, D점, E점, F점, G점, H점, I점, J점, K점, L점, 가맹점 M, 가맹점 P, 직영점 2, 직영점 1, 가맹점 R, 가맹점 S, 본사 | 담당자1, 개인점주1\n\n## 출력 스펙\n\n반드시 아래 JSON 형식으로만 답하세요.\n\n{\n  \"문서코드\": \"RPT\" 또는 \"INS\",\n  \"카테고리\": \"매출\" | \"상품\" | \"점주\" | \"재고\",\n  \"필터\": {\n    \"점주\": 배열 또는 null,\n    \"기간시작\": \"YYYY-MM\" 또는 null,\n    \"기간종료\": \"YYYY-MM\" 또는 null,\n    \"상품키워드\": 배열 또는 null\n  },\n  \"집계\": [\n    {\n      \"이름\": \"설명적 이름 (예: 점주별매출)\",\n      \"그룹\": [\"점주명\" | \"상품명\" | \"년월\"] 배열,\n      \"측정\": \"매출합계\" | \"수량합계\" | \"주문수\",\n      \"정렬\": \"매출내림차순\" | \"수량내림차순\" | \"년월오름차순\" | null,\n      \"상위N\": 숫자 또는 null\n    }\n  ],\n  \"비교\": {\n    \"전월대비\": boolean,\n    \"전년동월대비\": boolean\n  }\n}\n\n## 출력 규칙 (엄격)\n\n- 응답은 순수 JSON 객체만 포함하세요\n- 코드 블록(```), \"json\" 같은 라벨, 설명 텍스트를 앞뒤로 붙이지 마세요\n- 첫 문자는 { 여야 하고 마지막 문자는 } 여야 합니다\n\n## 판단 규칙\n\n### 문서코드\n- INS: \"왜\", \"어떻게\", \"추천\", \"제안\", \"판단\", \"원인\" 키워드 포함\n- RPT: 그 외 (기본값)\n\n### 카테고리\n- 재고: \"재고\", \"부족\", \"품절\" 언급\n- 상품: \"상품\", \"향료\", \"공병\", \"리필병\", \"향수\", \"베이스\", \"펌프\", \"뚜껑\" 등 언급\n- 점주: \"점주\", \"매장\", \"가맹점\" 언급이 있고 매출 집계가 주 관심사일 때\n- 매출: 기본값, 매출/금액/판매 관련\n\n### 기간 해석 (반드시 User Message의 \"오늘 날짜\"를 기준으로 계산)\n- \"이번달\": 기간시작/종료 모두 이번달\n- \"저번달\"/\"지난달\": 모두 저번달\n- \"올해\": 기간시작 올해 1월, 기간종료 이번달\n- \"작년\": 기간시작/종료 작년 1월~12월\n- \"최근 N개월\": 기간시작 (오늘 기준 N-1개월 전의 월), 기간종료 이번달\n- \"N개월 전\": 해당 월 하나\n- \"YYYY년 MM월\": 해당 월\n- \"YYYY년\": 해당 연도 전체\n- 명시 없음: null (전체 기간)\n\n### 집계 설계 원칙\n- 질문에 여러 의도가 있으면 집계 배열에 여러 개 넣음\n- \"상품\" 관련 언급 → 상품별 집계 반드시 포함\n- \"점주별\", \"매장별\", \"TOP\" → 점주별 집계 포함\n- \"추이\", \"변화\", \"월별\" → 월별 집계 포함\n- \"TOP N\", \"상위 N\" → 상위N 필드에 N 설정\n- 아무 단서 없으면 상위 10 기본\n\n### 비교 블록\n- \"전월 대비\", \"지난달 대비\" → 전월대비: true\n- \"작년 동월 대비\", \"전년 동월\" → 전년동월대비: true\n\n## 예시\n\n질문: \"A점 최근 3개월 매출 데이터 분석해줘\" (오늘 2026-04-22 기준)\n출력:\n{\"문서코드\":\"RPT\",\"카테고리\":\"매출\",\"필터\":{\"점주\":[\"A점\"],\"기간시작\":\"2026-02\",\"기간종료\":\"2026-04\",\"상품키워드\":null},\"집계\":[{\"이름\":\"A점 월별 매출\",\"그룹\":[\"년월\"],\"측정\":\"매출합계\",\"정렬\":\"년월오름차순\",\"상위N\":null},{\"이름\":\"A점 상품별 매출 TOP10\",\"그룹\":[\"상품명\"],\"측정\":\"매출합계\",\"정렬\":\"매출내림차순\",\"상위N\":10}],\"비교\":{\"전월대비\":false,\"전년동월대비\":false}}\n\n질문: \"최근 3개월간 전체 매장 TOP3를 정리해줘. 더불어 어떤 상품이 많이 팔렸는지도 같이 표시해주면 좋겠어\" (오늘 2026-04-22 기준)\n출력:\n{\"문서코드\":\"RPT\",\"카테고리\":\"상품\",\"필터\":{\"점주\":null,\"기간시작\":\"2026-02\",\"기간종료\":\"2026-04\",\"상품키워드\":null},\"집계\":[{\"이름\":\"매장별 매출 TOP3\",\"그룹\":[\"점주명\"],\"측정\":\"매출합계\",\"정렬\":\"매출내림차순\",\"상위N\":3},{\"이름\":\"전체 상품 판매 TOP10\",\"그룹\":[\"상품명\"],\"측정\":\"수량합계\",\"정렬\":\"수량내림차순\",\"상위N\":10}],\"비교\":{\"전월대비\":false,\"전년동월대비\":false}}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        2912,
+        96
+      ],
+      "id": "b7d639de-16bc-44c3-ae1c-2c2dfcabc142",
+      "name": "Parsing"
+    }
+  ],
+  "connections": {
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "Parsing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Report",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sheets API 조회": {
+      "main": [
+        [
+          {
+            "node": "데이터 필터링",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "데이터 필터링": {
+      "main": [
+        [
+          {
+            "node": "Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Docs 생성": {
+      "main": [
+        [
+          {
+            "node": "Docs 텍스트+표 삽입",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JSON 파싱": {
+      "main": [
+        [
+          {
+            "node": "Google Docs 생성",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Docs 텍스트+표 삽입": {
+      "main": [
+        [
+          {
+            "node": "스타일 적용 준비",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Docs 셀 내용 삽입": {
+      "main": [
+        [
+          {
+            "node": "문서 URL 반환",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "문서 URL 반환",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Docs 셀 내용 삽입",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Parsing",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "쿼리 정제": {
+      "main": [
+        [
+          {
+            "node": "Sheets API 조회",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "스타일 요청 생성": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Docs 표 스타일 적용": {
+      "main": [
+        [
+          {
+            "node": "셀 내용 삽입 준비",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "셀 내용 요청 생성": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "스타일 적용 준비": {
+      "main": [
+        [
+          {
+            "node": "스타일 요청 생성",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "셀 내용 삽입 준비": {
+      "main": [
+        [
+          {
+            "node": "셀 내용 요청 생성",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "셀 내용 요청 생성",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Docs 표 스타일 적용",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report": {
+      "main": [
+        [
+          {
+            "node": "JSON 파싱",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parsing": {
+      "main": [
+        [
+          {
+            "node": "쿼리 정제",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "pinData": {}
+}

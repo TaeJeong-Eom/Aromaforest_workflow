@@ -1,0 +1,405 @@
+{
+  "name": "[DEV] 공통_문서화_엔진",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "jsonExample",
+        "jsonExample": "{\n  \"fullBody\": \"\",\n  \"parsedData\": \"\",\n  \"문서번호\": \"\",\n  \"문서코드\": \"\",\n  \"카테고리\": \"\"\n}"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "2f286fa4-126a-47f0-a96f-b1e1cdecfab5",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "folderId": "default",
+        "title": "={{ $json.문서번호 }}"
+      },
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        192,
+        0
+      ],
+      "id": "a16da960-92b2-46a7-8ede-b3c2ab482fd0",
+      "name": "Google Docs 생성"
+    },
+    {
+      "parameters": {
+        "jsCode": "const docId = $('Google Docs 생성').first().json.id;\nconst docUrl = `https://docs.google.com/document/d/${docId}`;\n\nreturn [{\n  json: {\n    output: `분석 완료! 문서 링크: ${docUrl}`\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2432,
+        0
+      ],
+      "id": "d66ec019-d2b8-436b-82a8-4852dce80fce",
+      "name": "문서 URL 반환"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $('Google Docs 생성').first().json.id }}:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $('When Executed by Another Workflow').first().json.fullBody }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        416,
+        0
+      ],
+      "id": "749fac7a-dfc1-4396-84d3-55ba45b7726a",
+      "name": "Docs 텍스트+표 삽입"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $('Google Docs 생성').first().json.id }}:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.fullBody }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2208,
+        80
+      ],
+      "id": "c0861e02-35b1-44e7-8c93-0dfb40992b57",
+      "name": "Docs 셀 내용 삽입"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "5caeefe8-9752-4d07-bfa4-4047fe5cab8b",
+              "leftValue": "={{ $json.isEmpty }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1984,
+        0
+      ],
+      "id": "e91ae546-5079-4c3c-8c9f-bcf2b13e3f81",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "jsCode": "const doc = $input.first().json;\nconst raw = $('When Executed by Another Workflow').first().json.parsedData;\nconst parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;\nconst content = doc.body.content;\nconst tables = content.filter(item => item.table);\nconst requests = [];\n\n// 동적으로 '상세데이터*' 키 모두 수집\nconst tableDataList = Object.keys(parsed)\n  .filter(k => k.startsWith('상세데이터'))\n  .sort()\n  .map(k => parsed[k])\n  .filter(Boolean);\n\n// 표가 없으면 빈 요청 반환\nif (tables.length === 0) {\n  return [{ json: { fullBody: '', isEmpty: true } }];\n}\n\n// 역순 처리 (뒤 표부터 적용해야 앞 표 위치 변동 없음)\nconst tablesReversed = [...tables].reverse();\n\n// 1. 컬럼 너비 설정 (역순)\ntablesReversed.forEach((tableItem) => {\n  const tableStartIndex = tableItem.startIndex;\n  const numCols = tableItem.table.columns;\n  const widths = numCols === 2\n    ? [150, 301]\n    : Array(numCols).fill(Math.floor(451 / numCols));\n  widths.forEach((width, colIdx) => {\n    requests.push({\n      updateTableColumnProperties: {\n        tableStartLocation: { index: tableStartIndex },\n        columnIndices: [colIdx],\n        tableColumnProperties: {\n          widthType: 'FIXED_WIDTH',\n          width: { magnitude: width, unit: 'PT' }\n        },\n        fields: 'width,widthType'\n      }\n    });\n  });\n});\n\n// 2. 헤더 배경색 (역순)\ntablesReversed.forEach((tableItem, revIdx) => {\n  const originalIdx = tables.length - 1 - revIdx;\n  if (!tableDataList[originalIdx]) return;\n  \n  const tableStartIndex = tableItem.startIndex;\n  \n  requests.push({\n    updateTableCellStyle: {\n      tableRange: {\n        tableCellLocation: {\n          tableStartLocation: { index: tableStartIndex },\n          rowIndex: 0,\n          columnIndex: 0\n        },\n        rowSpan: 1,\n        columnSpan: tableItem.table.columns\n      },\n      tableCellStyle: {\n        backgroundColor: {\n          color: {\n            rgbColor: { red: 0.937, green: 0.937, blue: 0.937 }\n          }\n        }\n      },\n      fields: 'backgroundColor'\n    }\n  });\n});\n\nif (requests.length === 0) {\n  return [{ json: { fullBody: '', isEmpty: true } }];\n}\n\nconst fullBody = JSON.stringify({ requests });\nreturn [{ json: { fullBody, isEmpty: false } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        864,
+        0
+      ],
+      "id": "86450ac4-8c69-4cec-a57c-2d45650419c5",
+      "name": "스타일 요청 생성"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $('Google Docs 생성').first().json.id }}:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.fullBody }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1312,
+        80
+      ],
+      "id": "33c4d305-4336-4a46-8ee1-4f55aad60009",
+      "name": "Docs 표 스타일 적용"
+    },
+    {
+      "parameters": {
+        "jsCode": "const doc = $input.first().json;\nconst raw = $('When Executed by Another Workflow').first().json.parsedData;\nconst parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;\nconst content = doc.body.content;\nconst tables = content.filter(item => item.table);\n\n// 동적으로 '상세데이터*' 키 모두 수집\nconst tableDataList = Object.keys(parsed)\n  .filter(k => k.startsWith('상세데이터'))\n  .sort()\n  .map(k => parsed[k])\n  .filter(Boolean);\n\n// 모든 셀 삽입 요청을 통합 배열에 수집\nconst allCellInserts = [];\n\ntables.forEach((tableItem, tableIdx) => {\n  const tableData = tableDataList[tableIdx];\n  if (!tableData) return;\n  \n  const allRows = [tableData.컬럼, ...tableData.행들];\n  const numCols = tableData.컬럼.length;\n  const tableStartIndex = tableItem.startIndex;\n  \n  allRows.forEach((row, r) => {\n    row.forEach((cellText, c) => {\n      if (!cellText) return;\n      const cellIndex = tableStartIndex + 3 + r * (numCols * 2 + 1) + c * 2;\n      allCellInserts.push({\n        insertText: {\n          text: cellText,\n          location: { index: cellIndex }\n        }\n      });\n    });\n  });\n});\n\n// index 내림차순 정렬 (뒤쪽부터 삽입)\nallCellInserts.sort((a, b) => b.insertText.location.index - a.insertText.location.index);\n\nif (allCellInserts.length === 0) {\n  return [{ json: { fullBody: '', isEmpty: true } }];\n}\n\nconst fullBody = JSON.stringify({ requests: allCellInserts });\nreturn [{ json: { fullBody, isEmpty: false } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        0
+      ],
+      "id": "73dfeb48-d460-472e-bfb7-021b41f40dcf",
+      "name": "셀 내용 요청 생성"
+    },
+    {
+      "parameters": {
+        "method": "=GET",
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $('Google Docs 생성').first().json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        640,
+        0
+      ],
+      "id": "e8a8faf8-67a1-472f-a0e5-2223551264c7",
+      "name": "스타일 적용 준비"
+    },
+    {
+      "parameters": {
+        "url": "=https://docs.googleapis.com/v1/documents/{{ $('Google Docs 생성').first().json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDocsOAuth2Api",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1536,
+        80
+      ],
+      "id": "d77d681c-c536-4218-a743-960cbbadbdf7",
+      "name": "셀 내용 삽입 준비"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "ad907bb8-be0e-4f7a-bf55-f589aeef1ffb",
+              "leftValue": "={{ $json.isEmpty }}",
+              "rightValue": "is true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1088,
+        0
+      ],
+      "id": "fe88ccd0-dc44-4e68-ae92-7cadf3a38080",
+      "name": "If1"
+    }
+  ],
+  "connections": {
+    "Google Docs 생성": {
+      "main": [
+        [
+          {
+            "node": "Docs 텍스트+표 삽입",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Docs 텍스트+표 삽입": {
+      "main": [
+        [
+          {
+            "node": "스타일 적용 준비",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Docs 셀 내용 삽입": {
+      "main": [
+        [
+          {
+            "node": "문서 URL 반환",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "문서 URL 반환",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Docs 셀 내용 삽입",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "스타일 요청 생성": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Docs 표 스타일 적용": {
+      "main": [
+        [
+          {
+            "node": "셀 내용 삽입 준비",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "셀 내용 요청 생성": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "스타일 적용 준비": {
+      "main": [
+        [
+          {
+            "node": "스타일 요청 생성",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "셀 내용 삽입 준비": {
+      "main": [
+        [
+          {
+            "node": "셀 내용 요청 생성",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "셀 내용 요청 생성",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Docs 표 스타일 적용",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Google Docs 생성",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "pinData": {}
+}

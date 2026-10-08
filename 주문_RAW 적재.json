@@ -1,0 +1,571 @@
+{
+  "name": "주문_RAW 적재",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "# 주문_RAW 적재 - 중복방지 메모\n> v2 작성일: 2026-04-25\n> 변경: append → appendOrUpdate (upsert 패턴)\n\n## 왜 바꿨나\n\n기존 v1은 매번 최근 3개월 주문 전체를 무조건 append해서, 미완료 주문(입금대기·결제완료 등)이 매 실행마다 시트에 새로 쌓이는 문제가 있었음.\n\n단순히 \"주문번호 있으면 스킵\"으로 해결하면 안 되는 이유: 주문 상태는 시간에 따라 바뀜 (입금대기 → 결제완료 → 배송완료). 스킵하면 시트의 status가 영원히 초기 상태로 남아 잘못된 분석 근거가 됨.\n\n## 어떻게 해결했나\n\n**유니크키 (주문번호 + 상품명 + 옵션값) + appendOrUpdate**\n\n한 주문이 시트에서 여러 행을 차지하므로 (상품 × 옵션 단위), 매칭 키를 복합 키로 구성. 이 키 기준으로:\n- 신규 주문/옵션 → append\n- 기존 주문의 status 변화 → 같은 행 update (적재일시도 갱신됨)\n\n## 적재일시의 의미 변화\n\nv1: 최초 적재 시각 (불변)\nv2: 마지막 갱신 시각 (매번 갱신)\n\naudit 목적으로 \"최초 적재\" 정보가 필요하면 별도 컬럼(최초적재일시) 추가하고 매핑에서 제외하면 됨. 지금은 미적용.\n\n## 추후 최적화 여지\n\n종결 상태(구매확정·취소완료·반품완료·교환완료)는 더 이상 status가 바뀌지 않으므로, 시트에서 미리 종결 주문번호를 읽어 주문코드 추출 단계에서 필터링하면 API 호출 자체를 줄일 수 있음. 현재 월 ~40건 규모에선 불필요.",
+        "height": 756,
+        "width": 1136,
+        "color": 5
+      },
+      "id": "6fedbe9f-4749-42c0-8e0e-1eb15019a31c",
+      "name": "Sticky Note v2 변경이력",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -3376,
+        32
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "## 주문_RAW 적재\n\n아임웹 주문을 매일 새벽 Google Sheets에 자동으로 쌓는 워크플로우\n\n언제? 매일 자동 실행 (건드릴 필요 없음)\n\n",
+        "width": 432
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2000,
+        16
+      ],
+      "id": "fb9986f7-c5d7-42d9-9375-927c81cfe589",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "## Google Sheets 인증이 만료된 경우 \nGoogle Sheets 인증이 만료된 경우 다시 로그인하면 문제가 해결됨.\n\n1. 왼쪽 메뉴 → Credentials\n2. Google Sheets account 찾기\n3. 클릭 → Reconnect 또는 Sign in with Google 버튼 클릭\n4. 구글 계정 다시 로그인 및 권한 허용\n\n오류로그\nProblem in node ‘주문_RAW 시트 적재‘\nThe provided authorization grant (e.g., authorization code, resource owner credentials) or refresh token is invalid, expired, revoked, does not match the redirection URI used in the authorization request, or was issued to another client.",
+        "height": 320,
+        "width": 448
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "ef71a255-170d-4a86-9750-73cc2664cc66",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {}
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -2000,
+        240
+      ],
+      "id": "43dcb9e3-3050-430a-8d50-f917dedfc4c4",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date();\n\n// 3개월 전 시작 (00:00:00)\nconst start = new Date(now);\nstart.setMonth(now.getMonth() - 3);\nstart.setHours(0, 0, 0, 0);\n\n// 오늘 끝 (23:59:59)\nconst end = new Date(now);\nend.setHours(23, 59, 59, 999);\n\nreturn [{\n  json: {\n    date_from: Math.floor(start.getTime() / 1000),\n    date_to: Math.floor(end.getTime() / 1000),\n    date_label: now.toISOString().slice(0, 10).replace(/-/g, '').slice(2)\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1328,
+        240
+      ],
+      "id": "d9ecbbca-9ab0-4015-8e73-c590e7adaf12",
+      "name": "날짜 계산"
+    },
+    {
+      "parameters": {
+        "url": "https://api.imweb.me/v2/shop/orders",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "order_date_from",
+              "value": "={{  $json.date_from  }}"
+            },
+            {
+              "name": "order_date_to",
+              "value": "={{  $json.date_to  }}"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "access-token",
+              "value": "={{ $('Call \\'아임웹 인증 (서브)\\'').item.json.access_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1104,
+        240
+      ],
+      "id": "4b82d5fd-5fe0-4513-8c73-67d222789198",
+      "name": "주문 목록"
+    },
+    {
+      "parameters": {
+        "jsCode": "const list = $input.first().json.data.list;\nconst accessToken = $('Call \\'아임웹 인증 (서브)\\'').item.json.access_token;\n\nreturn list.map(order => ({\n  json: {\n    order_no: order.order_no,\n    orderer_name: order.orderer?.name,\n    total_price: order.payment?.total_price,\n    order_time: order.order_time,\n    access_token: accessToken\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -880,
+        240
+      ],
+      "id": "e0517e5e-85f0-4909-9dcf-f87d3ca6053b",
+      "name": "주문코드 추출"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -656,
+        240
+      ],
+      "id": "6e2c5761-fa28-45cf-a8f5-af416008a20a",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 상태값 한국어 매핑\nconst STATUS_MAP = {\n  'PAY_WAIT': '입금대기',\n  'PAY_COMPLETE': '결제완료',\n  'STANDBY': '배송준비중',\n  'DELIVERING': '배송중',\n  'COMPLETE': '배송완료',\n  'CANCEL': '취소완료',\n  'RETURN': '반품완료',\n  'EXCHANGE': '교환완료',\n  'PURCHASE_CONFIRMATION': '구매확정'\n};\n\nconst __orders = $('주문코드 추출').all();\nconst __inputs = $input.all();\nconst rows = [];\nfor (let __i = 0; __i < __inputs.length; __i++) {\nif (!__orders[__i]) continue; const meta = __orders[__i].json;\nconst __d = __inputs[__i].json && __inputs[__i].json.data; const detailList = Array.isArray(__d) ? __d : (__d ? [__d] : []); if (!__orders[__i]) continue;\n\n// 날짜 형식 통일\nconst now = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }).replace('T', ' ');\nconst orderDate = new Date(meta.order_time * 1000).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }).replace('T', ' ');\n\n// rows / now are declared above the loop\n\nfor (const prodOrder of detailList) {\n  const items = prodOrder.items ?? [];\n  \n  for (const item of items) {\n    const prodName = item.prod_name ?? '';\n    const options = item.options ?? [];\n    \n    // 옵션을 평탄화 (2중 배열 → 1차원)\n    const flatOptions = [];\n    for (const optGroup of options) {\n      for (const opt of optGroup) {\n        flatOptions.push(opt);\n      }\n    }\n    \n    if (flatOptions.length > 0) {\n      // 옵션이 있는 경우: 옵션별로 행 생성\n      for (const opt of flatOptions) {\n        const optValue = opt.value_name_list?.[0] ?? '';\n        const 유니크키 = `${meta.order_no}_${prodName}_${optValue}`;\n        \n        rows.push({\n          json: {\n            유니크키,\n            적재일시: now,\n            주문번호: meta.order_no,\n            주문일시: orderDate,\n            점주명: meta.orderer_name,\n            상품명: prodName,\n            옵션명: opt.option_name_list?.[0] ?? '',\n            옵션값: optValue,\n            수량: item.payment?.count ?? 0,\n            단가: item.payment?.price ?? 0,\n            배송비: item.payment?.deliv_price ?? 0,\n            완료여부: STATUS_MAP[prodOrder.status] ?? prodOrder.status ?? '',\n            주문상태: STATUS_MAP[prodOrder.status] ?? prodOrder.status ?? ''\n          }\n        });\n      }\n    } else {\n      // 옵션이 없는 경우: 상품 자체로 1행 생성\n      const 유니크키 = `${meta.order_no}_${prodName}_`;\n      \n      rows.push({\n        json: {\n          유니크키,\n          적재일시: now,\n          주문번호: meta.order_no,\n          주문일시: orderDate,\n          점주명: meta.orderer_name,\n          상품명: prodName,\n          옵션명: '',\n          옵션값: '',\n          수량: item.payment?.count ?? 0,\n          단가: item.payment?.price ?? 0,\n          배송비: item.payment?.deliv_price ?? 0,\n          완료여부: STATUS_MAP[prodOrder.status] ?? prodOrder.status ?? '',\n          주문상태: STATUS_MAP[prodOrder.status] ?? prodOrder.status ?? ''\n        }\n      });\n    }\n  }\n}\n\n}\nreturn rows;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -432,
+        96
+      ],
+      "id": "68db4158-287a-4818-b299-bff52fe678f9",
+      "name": "데이터 가공"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.imweb.me/v2/shop/orders/{{ $json.order_no }}/prod-orders",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "order_version",
+              "value": "v2"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "access-token",
+              "value": "={{ $json.access_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -432,
+        288
+      ],
+      "id": "23b041f8-d41a-4f58-8b37-5de5da6c914c",
+      "name": "주문 상세"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_AROMAFOREST_SHEET_ID",
+          "mode": "list",
+          "cachedResultName": "아로마포레스트 주문 데이터",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/YOUR_GOOGLE_FILE_ID/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1479383684,
+          "mode": "list",
+          "cachedResultName": "주문_RAW",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/YOUR_GOOGLE_FILE_ID/edit#gid=1479383684"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "유니크키": "={{ $json.유니크키 }}",
+            "수량": "={{ $json.수량 }}",
+            "적재일시": "={{ $json.적재일시 }}",
+            "주문일시": "={{ $json.주문일시 }}",
+            "주문번호": "={{ $json.주문번호 }}",
+            "점주명": "={{ $json.점주명 }}",
+            "상품명": "={{ $json.상품명 }}",
+            "옵션명": "={{ $json.옵션명 }}",
+            "옵션값": "={{ $json.옵션값 }}",
+            "단가": "={{ $json.단가 }}",
+            "배송비": "={{ $json.배송비 }}",
+            "완료여부": "={{ $json.완료여부 }}",
+            "주문상태": "={{ $json.주문상태 }}"
+          },
+          "matchingColumns": [
+            "유니크키"
+          ],
+          "schema": [
+            {
+              "id": "유니크키",
+              "displayName": "유니크키",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "적재일시",
+              "displayName": "적재일시",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "주문번호",
+              "displayName": "주문번호",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "주문일시",
+              "displayName": "주문일시",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "점주명",
+              "displayName": "점주명",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "상품명",
+              "displayName": "상품명",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "옵션명",
+              "displayName": "옵션명",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "옵션값",
+              "displayName": "옵션값",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "수량",
+              "displayName": "수량",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "단가",
+              "displayName": "단가",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "배송비",
+              "displayName": "배송비",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "완료여부",
+              "displayName": "완료여부",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "주문상태",
+              "displayName": "주문상태",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -208,
+        96
+      ],
+      "id": "d72c34dd-84c5-4a5e-9fbb-0b6193a97093",
+      "name": "주문_RAW 시트 적재"
+    },
+    {
+      "parameters": {
+        "content": "# 주문_RAW 적재 v2 설계 문서\n\n> 작성일: 2026-04-25\n> 변경 범위: 데이터 적재 패턴 (append → upsert)\n> 영향 범위: 주문_RAW 시트, 이를 참조하는 모든 다운스트림 워크플로우\n\n## 배경\n\n기존 v1은 매일 최근 3개월 주문 전체를 무조건 append하는 구조였다. 미완료 주문(입금대기·결제완료 등)이 매 실행마다 시트에 새로 쌓여 N중 중복이 누적되는 문제가 발견됨.\n\n운영 데이터의 신뢰성이 흔들리면 이 데이터를 입력으로 쓰는 모든 다운스트림 — 점주 분석 리포트, AI 챗봇, Looker Studio 대시보드 — 의 결과도 같이 흔들린다. 다른 어떤 자동화 추가 작업보다 우선순위가 높다고 판단해 즉시 작업.\n\n## 의사결정 과정\n\n### 옵션 비교\n\n세 가지 접근을 검토함.\n\n**A. 같은 주문번호 있으면 스킵 (단순 dedup)**\n- 장점: 로직 단순, 코드 변경 최소\n- 단점: **주문 상태 변화를 추적할 수 없음**\n- 결론: 부적절. 입금대기로 첫 적재된 주문이 영원히 입금대기로 남아 분석 신뢰성 훼손\n\n**B. 매번 전체 삭제 후 재적재 (truncate + insert)**\n- 장점: 무조건 깨끗한 상태 유지\n- 단점: 시트 삭제 작업의 위험성, 적재일시 이력 완전 소실, 다른 워크플로우 동시 실행 시 빈 시트 노출 위험\n- 결론: 부적절. 위험 대비 이득 없음\n\n**C. Upsert (유니크키 + appendOrUpdate)** ← 채택\n- 장점: 신규는 append, 기존은 update. 상태 변화 자연스럽게 반영. 시트 행 수 안정\n- 단점: 매칭 키 설계 필요, 기존 데이터 백필 1회 작업\n- 결론: 적합. 일회성 비용으로 영구 해결\n\n### 매칭 키 설계\n\n한 주문(주문번호)이 시트에서 여러 행을 차지함 — 상품 × 옵션 조합 단위.\n\n```\n주문번호 20260413A1B2C3\n├── 라벤더 향료 30ml\n├── 공병 30ml 투명\n└── 공병 30ml 갈색\n→ 시트 3행\n```\n\n따라서 매칭 키는 `주문번호` 단독이 아니라 `주문번호 + 상품명 + 옵션값` 복합 키여야 함.\n\n이는 GitHub 백업 워크플로우의 SHA 해시 키 발상과 동일 — **자연 키가 부족할 때 합성 키로 idempotency를 확보**하는 패턴.\n\n## 구현\n\n### 데이터 가공 노드\n\n각 행에 `유니크키` 필드 추가:\n```javascript\nconst 유니크키 = `${meta.order_no}_${prodName}_${optValue}`;\n```\n\n구분자로 `_` 사용. 별도 정제(공백 제거 등)는 일단 보류 — 실제 운영에서 매칭 실패 케이스가 발견되면 그때 trim/normalize 추가 검토.\n\n### 적재 노드\n\nn8n Google Sheets 노드의 작업 모드를 변경:\n- `append` → `appendOrUpdate`\n- `matchingColumns: ['유니크키']`\n- 매핑 목록에 `유니크키 = {{ $json.유니크키 }}` 추가\n\nn8n이 알아서 시트의 유니크키 컬럼을 읽어 매칭 시도하고, 매칭되면 update / 안 되면 append.\n\n### 시트 측\n\n`유니크키` 컬럼 (A열) 신설. 기존 6,000여 행은 수식으로 일괄 백필 후 값으로 굳힘.\n\n## 의미가 변한 컬럼\n\n### 적재일시\n\n- v1 의미: 최초 적재 시각 (불변)\n- v2 의미: 마지막 갱신 시각 (매 실행마다 갱신)\n\n영향 분석:\n- 점주 분석 리포트: `적재일시`가 아닌 `주문일시` 기준이라 영향 없음\n- AI 챗봇: 동일하게 `주문일시` 기준. 영향 없음\n- Looker Studio: 현재 `원본 데이터` 탭 사용 중이라 영향 없음\n- 향후 audit 목적 분석: 영향 있음 — 필요 시 `최초적재일시` 컬럼 별도 추가 검토\n\n## 트레이드오프\n\n### 받아들인 것\n\n- **API 호출 비용**: 종결 상태 주문도 매번 API 호출함. 현재 월 ~40건 규모에선 무시 가능.\n- **동시성**: 같은 워크플로우 두 인스턴스가 동시에 돌면 race condition 가능. 단일 스케줄이라 무관.\n- **삭제 시나리오 미지원**: 아임웹에서 주문이 완전 삭제되어도 시트의 행은 남아 있음. 정책상 거의 발생 안 함.\n\n### 미해결 (의도적으로 미룬 것)\n\n- **종결 상태 사전 필터링**: 시트에서 종결 주문번호 미리 읽어 API 호출 자체를 줄이는 최적화. 월 1,000건 이상 규모로 커지면 도입 검토.\n- **데이터 정규화**: 공백·특수문자가 매칭 실패를 일으키는 케이스 발견되면 그때 추가.\n- **최초적재일시 분리**: audit 요구가 명확해질 때 추가.\n\n## 다른 워크플로우와의 관계\n\n### 영향받는 워크플로우\n\n- **AI 챗봇 (WF5)**: 주문_RAW 시트를 입력으로 사용. v2 적용 후에는 데이터 신뢰성 향상으로 리포트 정확도 개선 예상.\n- **점주분석 리포트**: 위와 동일.\n- **Looker Studio 대시보드**: 현재 원본 데이터 탭 사용 중. 영향 없음. 다만 향후 주문_RAW로 통일하면 영향 받을 수 있음.\n\n### 영향 안 주는 워크플로우\n\n- 카카오 토큰 갱신 (서브)\n- 카카오 토큰 만료 알림\n- 재고 부족 알림\n- WF_n8n_백업\n\n## 검증 방법\n\n다음 두 가지로 v2 정상 동작 확인:\n\n**중복 방지 검증**\n1. 워크플로우 실행\n2. 결과 행 수 기록\n3. 즉시 한 번 더 실행\n4. 행 수가 늘지 않으면 OK\n\n**상태 갱신 검증**\n1. 시트에서 특정 행의 `완료여부`를 임의 값으로 수정\n2. 워크플로우 실행\n3. 해당 행이 원래 status로 복원되면 OK\n\n## 향후 진화 경로\n\n이 패턴이 안정화되면 같은 발상을 다음 영역에 확장 가능:\n\n- **상품 마스터 적재**: 아임웹 상품 데이터를 시트에 동기화할 때 (상품 ID를 유니크키로)\n- **점주 마스터 적재**: 점주 정보 변경 추적 (점주 ID 또는 점주명을 유니크키로)\n- **재고 스냅샷**: 일일 재고 변동을 추적할 때 (`상품ID_날짜` 복합키로 시계열 적재)\n\n이 모든 경우에 동일한 패턴이 적용됨 — **유니크키 합성 + appendOrUpdate**.\n\n## 결론\n\nv2는 v1의 데이터 누적 문제를 구조적으로 해결한다. 일회성 백필 비용을 지불하고 영구적인 idempotency를 얻는 거래다. 적용 후에는 다운스트림 워크플로우들의 분석 신뢰성이 함께 회복된다.",
+        "height": 3552,
+        "width": 656
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -4048,
+        32
+      ],
+      "id": "2dbcab39-30b5-4cce-8b25-a2ee54324bda",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "zgsB4cWyOcQ0oqas",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/zgsB4cWyOcQ0oqas",
+          "cachedResultName": "카카오 액세스 토큰 갱신 (서브)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [
+            "test"
+          ],
+          "schema": [
+            {
+              "id": "test",
+              "displayName": "test",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        -1776,
+        240
+      ],
+      "id": "a7e0b97a-c597-4bee-b08d-4ec149f0a89d",
+      "name": "Call '카카오 액세스 토큰 갱신 (서브)'"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "ec91tTqNK7ZTIQ5J",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/ec91tTqNK7ZTIQ5J",
+          "cachedResultName": "아임웹 인증 (서브)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [
+            "test"
+          ],
+          "schema": [
+            {
+              "id": "test",
+              "displayName": "test",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        -1552,
+        240
+      ],
+      "id": "6a103078-2be0-40f6-a276-edc6d052f659",
+      "name": "Call '아임웹 인증 (서브)'"
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Call '카카오 액세스 토큰 갱신 (서브)'",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "날짜 계산": {
+      "main": [
+        [
+          {
+            "node": "주문 목록",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "주문 목록": {
+      "main": [
+        [
+          {
+            "node": "주문코드 추출",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "주문코드 추출": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "데이터 가공",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "주문 상세",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "데이터 가공": {
+      "main": [
+        [
+          {
+            "node": "주문_RAW 시트 적재",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "주문 상세": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call '카카오 액세스 토큰 갱신 (서브)'": {
+      "main": [
+        [
+          {
+            "node": "Call '아임웹 인증 (서브)'",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call '아임웹 인증 (서브)'": {
+      "main": [
+        [
+          {
+            "node": "날짜 계산",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "pinData": {}
+}

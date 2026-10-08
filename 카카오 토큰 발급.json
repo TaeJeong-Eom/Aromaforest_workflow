@@ -1,0 +1,138 @@
+{
+  "name": "카카오 토큰 발급",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "0d4f4be0-94c5-49ba-8948-af4e151bcfc5",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://kauth.kakao.com/oauth/token",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "refresh_token"
+            },
+            {
+              "name": "client_id",
+              "value": "{{CLIENT_ID}}"
+            },
+            {
+              "name": "refresh_token",
+              "value": "{{REFRESH_TOKEN}}"
+            },
+            {
+              "name": "client_secret",
+              "value": "{{CLIENT_SECRET}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        416,
+        0
+      ],
+      "id": "45a2965b-8b06-4bb3-8e6d-f597c873d65c",
+      "name": "카카오 엑세스 토큰 갱신"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://kauth.kakao.com/oauth/token",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "authorization_code"
+            },
+            {
+              "name": "client_id",
+              "value": "{{CLIENT_ID}}"
+            },
+            {
+              "name": "redirect_url",
+              "value": "http://localhost:5678/oauth2/callback"
+            },
+            {
+              "name": "code",
+              "value": "{{CODE}}"
+            },
+            {
+              "name": "client_secret",
+              "value": "{{CLIENT_SECRET}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        208,
+        0
+      ],
+      "id": "d308089b-8663-4cd4-8762-5592ab0e5882",
+      "name": "카카오 엑세스 토큰 발급"
+    },
+    {
+      "parameters": {
+        "content": "## 카카오 엑세스 토큰 발급 받기(1달 1번)\n1. https://kauth.kakao.com/oauth/authorize?client_id=REST_API키&redirect_uri=http://localhost:5678/oauth2/callback&response_type=code&scope=talk_message\n\n2. \"REST_API키\" 자리에 키 값 입력하기\n카카오 developers.kakao.com\n→ 내 애플리케이션\n→ 아로마포레스트 알림 앱\n→ 앱(좌측메뉴) \n→ 플랫폼 키\n→ REST API 키 복사\n\n3. Google Spread Sheets 최신화(최신화해야 카톡 알람기능이 활성화됩니다)\nhttps://docs.google.com/spreadsheets/d/YOUR_TOKEN_SHEET_ID/edit?gid=0#gid=0\n에서 발급일 수정",
+        "height": 352,
+        "width": 688
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        160
+      ],
+      "id": "8875941b-52fb-47a4-a175-2cd72189d077",
+      "name": "Sticky Note"
+    }
+  ],
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "카카오 엑세스 토큰 발급",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "카카오 엑세스 토큰 발급": {
+      "main": [
+        [
+          {
+            "node": "카카오 엑세스 토큰 갱신",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "pinData": {}
+}

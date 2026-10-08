@@ -1,0 +1,193 @@
+{
+  "name": "카카오 토큰 만료 알림",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -32,
+        224
+      ],
+      "id": "d64cb186-387f-46db-a8fd-4221c84490ac",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_TOKEN_SHEET_ID",
+          "mode": "list",
+          "cachedResultName": "카카오 리프레시 토큰 관리",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/YOUR_TOKEN_SHEET_ID/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "시트1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/YOUR_TOKEN_SHEET_ID/edit#gid=0"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        192,
+        224
+      ],
+      "id": "a8ea9e8f-0445-470b-bb6d-fc59e2fc5b98",
+      "name": "토큰 만료일 조회"
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = $input.first().json;\nconst expiryDate = new Date(row['만료일']);\nconst today = new Date();\nconst diffTime = expiryDate - today;\nconst diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));\n\nreturn [{\n  json: {\n    daysLeft: diffDays,\n    expiryDate: row['만료일'],\n    shouldAlert: diffDays <= 3\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        224
+      ],
+      "id": "69bf27ac-f34e-4192-9dd9-b5295aa21d9b",
+      "name": "만료일 계산"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "0c59bd3b-6d8a-4c45-a970-0d3ea119b968",
+              "leftValue": "={{ $json.shouldAlert }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": "={{ false }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        640,
+        224
+      ],
+      "id": "8bf21965-23f7-4c49-b9d0-9d6d580f2d74",
+      "name": "조건 분기(만료기간 > 3)"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://kapi.kakao.com/v2/api/talk/memo/default/send",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "{\n  \"Authorization\": \"Bearer {{KAKAO_ACCESS_TOKEN}}_Nqy\"\n}",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "template_object",
+              "value": "={\"object_type\":\"text\",\"text\":\"⚠️ 카카오 리프레시 토큰이 {{ $json.daysLeft }}일 후 만료됩니다! 갱신해주세요.\",\"link\":{\"web_url\":\"https://developers.kakao.com\"}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        864,
+        224
+      ],
+      "id": "db7d31a1-ec42-4848-adab-8318ee40ece8",
+      "name": "만료 알림 발송(카톡)"
+    },
+    {
+      "parameters": {
+        "content": "## 카카오 토큰 만료 알림\n리프레시 토큰 만료 3일 전에 카톡 알림. 알림 오면 인가코드 URL로 토큰 재발급\n발급 후 수기로 시트에 기록해야 다음 달에 알림기능 활성화\n\n",
+        "height": 112,
+        "width": 496
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -32,
+        80
+      ],
+      "id": "1eab6fc3-eb1c-4c85-a39a-6daea0ee1be9",
+      "name": "Sticky Note"
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "토큰 만료일 조회",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "토큰 만료일 조회": {
+      "main": [
+        [
+          {
+            "node": "만료일 계산",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "만료일 계산": {
+      "main": [
+        [
+          {
+            "node": "조건 분기(만료기간 > 3)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "조건 분기(만료기간 > 3)": {
+      "main": [
+        [
+          {
+            "node": "만료 알림 발송(카톡)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "pinData": {}
+}
