@@ -3,7 +3,21 @@
 B2B 향수 프랜차이즈 본사의 운영 업무(주문 확인, 재고 관리, 가맹점 매출 분석)를 n8n으로 자동화한 시스템입니다.
 전임자가 퇴사한 뒤 운영을 넘겨받으면서 사람이 매일 하던 확인 작업을 알림과 데이터 파이프라인으로 바꿨고, 그 데이터 위에 **채팅으로 질문하면 분석 리포트(Google Docs)를 만들어 주는 AI 챗봇**을 올렸습니다.
 
-- 스택: n8n (self-hosted) · Oracle Cloud ARM · Docker · Caddy(HTTPS) · 아임웹 API · Google Sheets/Docs API · Anthropic Claude · Kakao API · Looker Studio
+`n8n (self-hosted)` `Oracle Cloud ARM` `Docker` `Caddy(HTTPS)` `아임웹 API` `Google Sheets/Docs API` `Anthropic Claude` `Kakao API`
+
+## 질문하면 리포트가 나옵니다
+
+<table>
+<tr>
+<td width="55%" align="center"><img src="images/n8n-owner-report-chat.png" alt="채팅으로 질문"><br><sub><b>① 질문</b> — "○○점 최근 3개월 매출데이터를 분석해줘"</sub></td>
+<td width="45%" align="center"><img src="images/ai-report-p1.png" alt="생성된 리포트"><br><sub><b>② 결과</b> — 자동 생성된 Google Docs 리포트 (점포명·금액은 가림)</sub></td>
+</tr>
+</table>
+
+<details>
+<summary>리포트 2페이지 보기 — TOP10 표 + AI 요약 한 줄</summary>
+<img src="images/ai-report-p2.png" alt="리포트 2페이지" width="60%">
+</details>
 
 ## 구성
 
@@ -18,12 +32,29 @@ B2B 향수 프랜차이즈 본사의 운영 업무(주문 확인, 재고 관리,
 | 운영 | n8n_백업 — 워크플로우를 GitHub(private)에 백업 | 스케줄 |
 | 공통 | 아임웹 인증 (서브), 카카오 액세스 토큰 갱신 (서브) | 호출형 |
 
+```mermaid
+flowchart LR
+    IMWEB[(아임웹 주문)] -->|매일| RAW[주문_RAW 적재<br/>유니크키 upsert]
+    RAW --> SHEET[(Google Sheets)]
+    IMWEB -->|월·화| ALERT[주문·재고 알림] --> KAKAO[카카오톡]
+
+    Q[채팅 질문] --> ROUTER{통합챗봇_라우터<br/>Haiku 분류 · confidence}
+    ROUTER -->|owner| E1[점주 분석 엔진]
+    ROUTER -->|sales| E2[매출 분석 엔진]
+    ROUTER -->|stock| E3[재고 분석 엔진]
+    ROUTER -->|낮은 confidence| ASK[되묻기]
+    SHEET -->|Sheets API + JS 집계| E1 & E2 & E3
+    E1 & E2 & E3 --> DOC[공통_문서화_엔진] --> GDOC[Google Docs 리포트]
 ```
-채팅 질문 ──▶ 통합챗봇_라우터 (Claude Haiku로 분류 · confidence 판단)
-                 ├─ owner  ──▶ 점주 분석 엔진 ─┐
-                 ├─ sales  ──▶ 매출 분석 엔진 ─┼─▶ 공통_문서화_엔진 ──▶ Google Docs 리포트
-                 └─ stock  ──▶ 재고 분석 엔진 ─┘
-```
+
+## Before → After
+
+<table>
+<tr>
+<td width="60%" align="center"><img src="images/imweb-order-admin.png" alt="아임웹 관리자"><br><sub><b>Before</b> — 관리자 페이지에 들어가서 주문을 하나씩 확인</sub></td>
+<td width="40%" align="center"><img src="images/kakao-order-alert.png" alt="주문 알림 카톡"><br><sub><b>After</b> — 미처리 주문이 아침에 카톡으로 도착 (주문자·금액은 가림)</sub></td>
+</tr>
+</table>
 
 ## 핵심 설계 결정
 
@@ -32,24 +63,36 @@ B2B 향수 프랜차이즈 본사의 운영 업무(주문 확인, 재고 관리,
 - **선택**: Sheets API를 HTTP로 직접 호출해서 받고, Code 노드(JS)에서 점주별·월별·상품별로 집계한 뒤 집계표만 AI에 전달.
 - **결과**: 실제 분석 대상은 필터링 후 수백 행 수준. AI는 계산이 아니라 해석만 담당함.
 
+<img src="images/n8n-sales-engine.png" alt="매출 분석 엔진">
+<sub>매출 분석 엔진 — Parsing AI(질문→쿼리) → Sheets API 조회 → JS 필터링·집계 → Report AI(해석) → 공통 문서화 엔진 호출</sub>
+
 ### 2. 라우터 + confidence 폴백
 - **문제**: 한 AI 프롬프트에 점주·매출·재고 분석을 다 몰아넣으니 프롬프트가 비대해지고 오답이 늘어남.
 - **선택**: 가벼운 모델(Haiku)이 질문을 먼저 분류하고, confidence가 기준(0.7) 아래면 되묻도록 함. 분석은 카테고리별 엔진이 따로 맡음.
 - **방어 코드**: AI 응답은 코드블록 제거 → JSON 파싱 → 필수 필드 검증을 거친 뒤에만 다음 노드로 넘김.
+
+<img src="images/n8n-router-chat.png" alt="통합챗봇 라우터">
+<sub>통합챗봇_라우터 — 분류 결과에 따라 Switch가 점주/매출/재고 엔진 또는 되묻기로 보냄</sub>
 
 ### 3. 문서 생성을 공통 서브워크플로우로 추출
 - **원칙**: 먼저 복제해서 수정하고, 안정되면 추출함.
 - **결과**: 어떤 엔진이든 같은 JSON 형식(요약·표·상세데이터)만 넘기면 같은 스타일의 Google Docs 리포트가 나옴.
 - **주의한 점**: Docs API는 텍스트를 넣을 때마다 index가 바뀌어서 삽입 → 재조회 → 스타일 적용의 3단계 batchUpdate로 나눔.
 
+<img src="images/n8n-owner-report-fullflow.png" alt="점주분석 리포트 전체 흐름">
+<sub>추출 전 원본(점주분석 리포트) — 파싱부터 Docs 스타일 적용까지 한 워크플로우에 있던 구조</sub>
+
 ### 4. 멱등 적재와 그 한계
 - **문제**: 같은 기간을 다시 적재하면 매출이 부풀려짐.
 - **선택**: `주문번호_상품명_옵션값` 복합 유니크키 + `Append or Update`.
 - **그 다음에 배운 것**: 멱등성은 "같은 걸 여러 번 써도 안전"은 보장하지만 "써야 할 걸 안 쓴 것"은 못 잡음. 에러 없이 끝나면서 69건 중 1건만 적재되던 문제를 시트 데이터를 역추적해서 찾았고, 백필로 공백 구간을 전부 복구함. 지금은 입력·출력 건수가 맞는지 검증하는 관측성 장치를 붙이는 중.
 
+<img src="images/sheet-order-raw-unique-key.png" alt="주문_RAW 유니크키">
+<sub>주문_RAW 시트 — A열이 upsert 기준 유니크키 (주문자 열은 가림)</sub>
+
 ## 데이터 예시에 대해
 
-프롬프트 안의 가맹점명·담당자명·매출 수치는 모두 익명화한 예시 값(`A점`, `가맹점 M`, `담당자1` 등)으로 바꿔 두었습니다.
+워크플로우 프롬프트 안의 가맹점명·담당자명·매출 수치는 모두 익명화한 예시 값(`A점`, `가맹점 M`, `담당자1` 등)으로 바꿔 두었고, 이미지 속 개인정보·금액은 가림 처리했습니다.
 
 ## 그대로 가져다 쓰려면
 
