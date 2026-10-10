@@ -17,7 +17,7 @@
 
 ## 주요 기능
 
-- 미처리 주문 카카오톡 알림 — 월·화 08:50
+- 미처리 주문 카카오톡 알림 — 월·화 09:00
 - 재고 부족 카카오톡 알림 — 카테고리별 기준, 월·화 09:00
 - 카카오 refresh_token 만료 사전 알림 — 만료 3일 전
 - 아임웹 주문 데이터 일일 적재 — 상품·옵션 단위, 유니크키 upsert
@@ -52,7 +52,7 @@ flowchart LR
     ROUTER -->|owner| E1[점주 분석 엔진]
     ROUTER -->|sales| E2[매출 분석 엔진]
     ROUTER -->|stock| E3[재고 분석 엔진]
-    ROUTER -->|확신 낮음| ASK[되묻기]
+    ROUTER -->|unknown| ASK[Fallback<br/>되묻기 응답 개발 중]
     SHEET -->|Sheets API + JS 집계| E1 & E2 & E3
     E1 & E2 & E3 --> DOC[공통_문서화_엔진] --> GDOC[Google Docs 리포트]
 ```
@@ -77,7 +77,7 @@ flowchart LR
 
 ### 질문 분류 라우터
 - 배경: 단일 프롬프트에 점주·매출·재고 분석 집중 → 프롬프트 비대, 오답 증가
-- 결정: Haiku로 질문 분류, confidence 0.7 미만 시 되묻기. 분석은 카테고리별 엔진 담당
+- 결정: Haiku로 질문 분류, confidence 0.7 미만·미분류 질문은 `unknown`으로 분리해 Fallback 분기로 보냄 (되묻기 응답은 개발 중). 분석은 카테고리별 엔진 담당
 - 효과: 엔진별 독립 수정·추가 가능
 
 <img src="images/n8n-router-chat.png" alt="통합챗봇 라우터">
@@ -100,7 +100,7 @@ flowchart LR
 <sub>주문_RAW — A열 유니크키 (주문자 열 가림)</sub>
 
 ### 인증 로직 서브워크플로우화
-- 결정: 아임웹 인증 · 카카오 토큰 갱신을 서브워크플로우로 분리, 모든 알림·적재 워크플로우가 호출
+- 결정: 아임웹 인증 · 카카오 토큰 갱신을 서브워크플로우로 분리, 주문 알림 · 재고 알림 · 주문 적재가 공통 호출
 - 효과: 토큰 교체 시 수정 지점 1곳
 
 ## 트러블슈팅
@@ -133,7 +133,7 @@ flowchart LR
 | `카카오 토큰 만료 알림` | 발급일 기준 만료일 계산, 3일 이내 시 알림 |
 | `주문_RAW 적재` | 주문 1건 → 상품·옵션 단위 행 분리, 유니크키 upsert |
 | `아로마포레스트 AI 챗봇(점주분석 리포트)` | 점주 목록 시트 동적 조회, 최근 6개월 주문 점주만 매칭 |
-| `[DEV] 통합챗봇_라우터` | Haiku 분류 + confidence 기준 되묻기 |
+| `[DEV] 통합챗봇_라우터` | Haiku 분류 + confidence 0.7 기준 `unknown` 분리 |
 | `[DEV] AI Response - Sales / Stock` | 카테고리별 분석 엔진 |
 | `[DEV] 공통_문서화_엔진` | JSON 입력 → Docs 리포트 생성 |
 | `n8n_백업` | n8n API로 워크플로우 export → GitHub private 레포 저장 |
